@@ -40,6 +40,8 @@ class SettingsStore(context: Context) {
         private val DEPLOY_PASSWORD = stringPreferencesKey("deploy_password")
         private val DEPLOY_PASSWORD_ENCRYPTED = stringPreferencesKey("deploy_password_encrypted")
         private val DEPLOY_SSH_PORT = stringPreferencesKey("deploy_ssh_port")
+        private val DEPLOY_DNS1 = stringPreferencesKey("deploy_dns1")
+        private val DEPLOY_DNS2 = stringPreferencesKey("deploy_dns2")
         private val EXCLUDED_APPS = stringPreferencesKey("excluded_apps")
         
         private val DETAILED_LOGS = booleanPreferencesKey("detailed_logs")
@@ -89,6 +91,11 @@ class SettingsStore(context: Context) {
 
         // ═══ Поведение ═══
         private val AUTO_SWITCH_TO_LOGS = booleanPreferencesKey("auto_switch_to_logs")
+
+        private val HIDE_BLOCKER_WARNING = booleanPreferencesKey("hide_blocker_warning")
+        private val SHOW_SPEED_GRAPH = booleanPreferencesKey("show_speed_graph")
+        
+        private val HAS_SEEN_WELCOME_DIALOG = booleanPreferencesKey("has_seen_welcome_dialog")
     }
 
     private val dataStore = appContext.dataStore
@@ -119,6 +126,9 @@ class SettingsStore(context: Context) {
         readSecret(it, DEPLOY_PASSWORD_ENCRYPTED, DEPLOY_PASSWORD)
     }
     val deploySshPort: Flow<String> = dataStore.data.map { it[DEPLOY_SSH_PORT] ?: "" }
+    val deployDns1: Flow<String> = dataStore.data.map { it[DEPLOY_DNS1] ?: "1.1.1.1" }
+    val deployDns2: Flow<String> = dataStore.data.map { it[DEPLOY_DNS2] ?: "1.0.0.1" }
+    
     val excludedApps: Flow<String> = dataStore.data.map { it[EXCLUDED_APPS] ?: "" }
     
     val detailedLogs: Flow<Boolean> = dataStore.data.map { it[DETAILED_LOGS] ?: false }
@@ -138,7 +148,7 @@ class SettingsStore(context: Context) {
     }
 
     // ═══ Proxy Mode ═══
-    val proxyMode: Flow<String> = dataStore.data.map { it[PROXY_MODE] ?: "tun" }
+    val proxyMode: Flow<String> = appContext.dataStore.data.map { it[PROXY_MODE] ?: "tun" }
     val proxyHost: Flow<String> = dataStore.data.map { it[PROXY_HOST] ?: "127.0.0.1" }
     val proxyPort: Flow<Int> = dataStore.data.map { it[PROXY_PORT] ?: 1080 }
 
@@ -151,6 +161,17 @@ class SettingsStore(context: Context) {
     val isWhitelist: Flow<Boolean> = dataStore.data.map { it[IS_WHITELIST] ?: false }
 
     // ═══ Theme Mode ═══
+    val hasSeenWelcomeDialog: Flow<Boolean> = dataStore.data
+        .map { preferences ->
+            preferences[HAS_SEEN_WELCOME_DIALOG] ?: false
+        }
+
+    suspend fun saveHasSeenWelcomeDialog(hasSeen: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[HAS_SEEN_WELCOME_DIALOG] = hasSeen
+        }
+    }
+
     val themeMode: Flow<String> = dataStore.data.map { it[THEME_MODE] ?: "system" }
     val isDynamicColor: Flow<Boolean> = dataStore.data.map { it[IS_DYNAMIC_COLOR] ?: false }
     val themePalette: Flow<String> = dataStore.data.map { it[THEME_PALETTE] ?: "indigo" }
@@ -173,8 +194,21 @@ class SettingsStore(context: Context) {
     // ═══ Поведение ═══
     val autoSwitchToLogs: Flow<Boolean> = dataStore.data.map { it[AUTO_SWITCH_TO_LOGS] ?: true }
 
+    val hideBlockerWarning: Flow<Boolean> = dataStore.data.map { it[HIDE_BLOCKER_WARNING] ?: false }
+    val showSpeedGraph: Flow<Boolean> = dataStore.data.map { it[SHOW_SPEED_GRAPH] ?: true }
+
     suspend fun saveAutoSwitchToLogs(enabled: Boolean) {
         dataStore.edit { prefs -> prefs[AUTO_SWITCH_TO_LOGS] = enabled }
+    }
+
+
+
+    suspend fun saveHideBlockerWarning(hide: Boolean) {
+        dataStore.edit { prefs -> prefs[HIDE_BLOCKER_WARNING] = hide }
+    }
+
+    suspend fun saveShowSpeedGraph(show: Boolean) {
+        dataStore.edit { prefs -> prefs[SHOW_SPEED_GRAPH] = show }
     }
 
     suspend fun saveThemeMode(mode: String) {
@@ -249,6 +283,15 @@ class SettingsStore(context: Context) {
         noDns: Boolean = false
     ) {
         dataStore.edit { prefs ->
+            val isChanged = prefs[PEER] != peer ||
+                            prefs[VK_HASHES] != vkHashes ||
+                            prefs[SECONDARY_VK_HASH] != secondaryVkHash ||
+                            prefs[WORKERS_PER_HASH] != workersPerHash ||
+                            prefs[PROTOCOL] != protocol ||
+                            prefs[LISTEN_PORT] != listenPort ||
+                            prefs[SNI] != sni ||
+                            prefs[NO_DNS] != noDns
+
             prefs[PEER] = peer
             prefs[VK_HASHES] = vkHashes
             prefs[SECONDARY_VK_HASH] = secondaryVkHash
@@ -257,8 +300,10 @@ class SettingsStore(context: Context) {
             prefs[LISTEN_PORT] = listenPort
             prefs[SNI] = sni
             prefs[NO_DNS] = noDns
-            prefs[CURRENT_PROFILE_ID] = ""
-            prefs[CURRENT_PROFILE_NAME] = ""
+            if (isChanged) {
+                prefs[CURRENT_PROFILE_ID] = ""
+                prefs[CURRENT_PROFILE_NAME] = ""
+            }
         }
     }
 
@@ -282,12 +327,14 @@ class SettingsStore(context: Context) {
         }
     }
 
-    suspend fun saveDeploy(ip: String, login: String, pass: String, sshPort: String) {
+    suspend fun saveDeploy(ip: String, login: String, pass: String, sshPort: String, dns1: String, dns2: String) {
         dataStore.edit { prefs ->
             prefs[DEPLOY_IP] = ip
             prefs[DEPLOY_LOGIN] = login
             prefs.putSecret(DEPLOY_PASSWORD_ENCRYPTED, DEPLOY_PASSWORD, pass)
             prefs[DEPLOY_SSH_PORT] = sshPort
+            prefs[DEPLOY_DNS1] = dns1
+            prefs[DEPLOY_DNS2] = dns2
         }
     }
 

@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+var pktPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 2048)
+	},
+}
+
+func getPktBuf(size int) []byte {
+	b := pktPool.Get().([]byte)
+	if cap(b) < size {
+		b = make([]byte, size)
+	}
+	return b[:size]
+}
+
+func putPktBuf(b []byte) {
+	if cap(b) < 2048 {
+		return
+	}
+	pktPool.Put(b[:cap(b)])
+}
+
 const (
 	returnChBuf = 384
 
@@ -36,17 +57,19 @@ type WorkerSlot struct {
 }
 
 type Dispatcher struct {
-	localConn  net.PacketConn
-	clientAddr atomic.Pointer[net.Addr]
-	mu         sync.Mutex
-	workers    []*WorkerSlot
-	rrIndex    int
-	rrCount    int // сколько пакетов отправлено в текущий worker (0..chunkSize-1)
-	ReturnCh   chan []byte
-	ctx        context.Context
-	cancel     context.CancelFunc
-	wg         sync.WaitGroup
-	stats      *Stats
+	localConn    net.PacketConn
+	clientAddr   atomic.Pointer[net.Addr]
+	mu           sync.Mutex
+	workers      []*WorkerSlot
+	rrIndex      int
+	rrCount      int // сколько пакетов отправлено в текущий worker (0..chunkSize-1)
+	ReturnCh     chan []byte
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	stats        *Stats
+	firstPktUp   uint32
+	firstPktDown uint32
 }
 
 func NewDispatcher(ctx context.Context, localConn net.PacketConn, stats *Stats) *Dispatcher {
@@ -125,13 +148,18 @@ func (d *Dispatcher) readLoop() {
 		d.clientAddr.Store(&addr)
 		atomic.AddInt64(&d.stats.TotalBytesUp, int64(n))
 
-		pkt := make([]byte, n)
+		if atomic.CompareAndSwapUint32(&d.firstPktUp, 0, 1) {
+			log.Printf("[ДИСП] [ДЕБАГ] Получен ПЕРВЫЙ пакет от локального WireGuard (%d байт) с адреса %s", n, addr.String())
+		}
+
+		pkt := getPktBuf(n)
 		copy(pkt, buf[:n])
 
 		d.mu.Lock()
 		nw := len(d.workers)
 		if nw == 0 {
 			d.mu.Unlock()
+			putPktBuf(pkt)
 			continue
 		}
 
@@ -169,6 +197,7 @@ func (d *Dispatcher) readLoop() {
 			// Все workers перегружены — сдвигаем указатель, пакет дропается
 			d.rrIndex = (idx + 1) % nw
 			d.rrCount = 0
+			putPktBuf(pkt)
 		}
 		d.mu.Unlock()
 	}
@@ -184,15 +213,21 @@ func (d *Dispatcher) writeLoop() {
 		case pkt := <-d.ReturnCh:
 			addrPtr := d.clientAddr.Load()
 			if addrPtr == nil {
+				putPktBuf(pkt)
 				continue
 			}
 			addr := *addrPtr
+			if atomic.CompareAndSwapUint32(&d.firstPktDown, 0, 1) {
+				log.Printf("[ДИСП] [ДЕБАГ] Отправляем ПЕРВЫЙ пакет обратно локальному WireGuard (%d байт) на адрес %s", len(pkt), addr.String())
+			}
 			if _, err := d.localConn.WriteTo(pkt, addr); err != nil {
 				if d.ctx.Err() != nil {
+					putPktBuf(pkt)
 					return
 				}
 			}
 			atomic.AddInt64(&d.stats.TotalBytesDown, int64(len(pkt)))
+			putPktBuf(pkt)
 		}
 	}
 }

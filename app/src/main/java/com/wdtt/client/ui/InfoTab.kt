@@ -98,6 +98,7 @@ private const val ReleasesUrl = "https://github.com/SpaceNeuroX/proxy-turn-vk-an
 private const val IssuesUrl = "https://github.com/SpaceNeuroX/proxy-turn-vk-android/issues/new"
 private const val DeveloperProfileUrl = "https://github.com/SpaceNeuroX"
 private const val RepositoryUrl = "https://github.com/SpaceNeuroX/proxy-turn-vk-android"
+private const val TelegramChannelUrl = "https://t.me/darkbitVPN"
 private const val DonateUrl = ""
 
 private val browserPackages = listOf(
@@ -353,7 +354,7 @@ fun InfoTab() {
 
         ExpandableSectionCard(
             title = "О проекте",
-            itemCount = "4 ссылки",
+            itemCount = "5 ссылок",
             expanded = projectExpanded,
             onToggle = { projectExpanded = !projectExpanded },
             icon = {
@@ -372,6 +373,20 @@ fun InfoTab() {
                 icon = {
                     Icon(
                         imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            )
+
+            ProjectLinkRow(
+                title = "Telegram-канал",
+                subtitle = "Канал автора форка darkbitVPN",
+                onClick = { openUrlInBrowser(context, TelegramChannelUrl) },
+                icon = {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_telegram),
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(18.dp)

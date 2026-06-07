@@ -58,10 +58,14 @@ fun DeployTab() {
     val savedIp by settingsStore.deployIp.collectAsStateWithLifecycle(initialValue = "")
     val savedLogin by settingsStore.deployLogin.collectAsStateWithLifecycle(initialValue = "")
     val savedPassword by settingsStore.deployPassword.collectAsStateWithLifecycle(initialValue = "")
+    val savedDns1 by settingsStore.deployDns1.collectAsStateWithLifecycle(initialValue = "1.1.1.1")
+    val savedDns2 by settingsStore.deployDns2.collectAsStateWithLifecycle(initialValue = "1.0.0.1")
 
     var ip by remember { mutableStateOf("") }
     var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
+    var dns1 by remember { mutableStateOf("1.1.1.1") }
+    var dns2 by remember { mutableStateOf("1.0.0.1") }
 
     val savedMainPass by settingsStore.deployMainPassword.collectAsStateWithLifecycle(initialValue = "")
     val savedAdminId by settingsStore.deployAdminId.collectAsStateWithLifecycle(initialValue = "")
@@ -94,6 +98,8 @@ fun DeployTab() {
     LaunchedEffect(savedIp) { if (savedIp.isNotEmpty()) ip = savedIp }
     LaunchedEffect(savedLogin) { if (savedLogin.isNotEmpty()) login = savedLogin }
     LaunchedEffect(savedPassword) { if (savedPassword.isNotEmpty()) password = savedPassword }
+    LaunchedEffect(savedDns1) { if (savedDns1.isNotEmpty()) dns1 = savedDns1 }
+    LaunchedEffect(savedDns2) { if (savedDns2.isNotEmpty()) dns2 = savedDns2 }
     val animatedProgress by animateFloatAsState(
         targetValue = deployProgress,
         animationSpec = tween(durationMillis = 1200, easing = androidx.compose.animation.core.FastOutSlowInEasing),
@@ -119,7 +125,7 @@ fun DeployTab() {
                 value = ip,
                 onValueChange = {
                     ip = it.filter { c -> !c.isWhitespace() }
-                    scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort) }
+                    scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort, dns1, dns2) }
                 },
                 label = { Text("IP сервера или домен (без порта)") },
                 placeholder = { Text("1.2.3.4 (без порта)") },
@@ -137,7 +143,7 @@ fun DeployTab() {
                     value = login,
                     onValueChange = {
                         login = it.filter { c -> !c.isWhitespace() }
-                        scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort) }
+                        scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort, dns1, dns2) }
                     },
                     label = { Text("Логин") },
                     placeholder = { Text("root") },
@@ -150,10 +156,42 @@ fun DeployTab() {
                     value = password,
                     onValueChange = {
                         password = it.filter { c -> !c.isWhitespace() }
-                        scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort) }
+                        scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort, dns1, dns2) }
                     },
                     label = { Text("Пароль SSH") },
                     placeholder = { Text("password") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    enabled = !isDeploying,
+                )
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = dns1,
+                    onValueChange = {
+                        dns1 = it.filter { c -> !c.isWhitespace() }
+                        scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort, dns1, dns2) }
+                    },
+                    label = { Text("Основной DNS") },
+                    placeholder = { Text("1.1.1.1") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(16.dp),
+                    enabled = !isDeploying,
+                )
+                OutlinedTextField(
+                    value = dns2,
+                    onValueChange = {
+                        dns2 = it.filter { c -> !c.isWhitespace() }
+                        scope.launch { settingsStore.saveDeploy(ip, login, password, savedSshPort, dns1, dns2) }
+                    },
+                    label = { Text("Резервный DNS") },
+                    placeholder = { Text("1.0.0.1") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                     shape = RoundedCornerShape(16.dp),
@@ -278,7 +316,7 @@ fun DeployTab() {
                                 context = appContext,
                                 host = ip, user = effectiveLogin, pass = password, port = savedSshPort.toIntOrNull() ?: 22,
                                 mainPass = savedMainPass, adminId = savedAdminId, botToken = savedBotToken,
-                                dtlsPort = effectiveDtlsPort, wgPort = effectiveWgPort,
+                                dtlsPort = effectiveDtlsPort, wgPort = effectiveWgPort, dns1 = dns1, dns2 = dns2,
                                 onProgress = { p, s -> DeployManager.updateProgress(p, s) }
                             )
                             if (success) {
@@ -531,7 +569,7 @@ private suspend fun performDeploy(
     context: Context,
     host: String, user: String, pass: String, port: Int,
     mainPass: String, adminId: String, botToken: String,
-    dtlsPort: Int, wgPort: Int,
+    dtlsPort: Int, wgPort: Int, dns1: String, dns2: String,
     onProgress: (Float, String) -> Unit
 ): Boolean = withContext(Dispatchers.IO) {
     var session: Session? = null
@@ -545,7 +583,8 @@ private suspend fun performDeploy(
         val passArg = if (mainPass.isNotBlank()) "-password \"$mainPass\" " else ""
         val adminArg = if (adminId.isNotBlank()) "-admin \"$adminId\" " else ""
         val botArg = if (botToken.isNotBlank()) "-bot-token \"$botToken\" " else ""
-        val args = "$passArg$adminArg$botArg".trim()
+        val dnsArg = "-dns ${if(dns1.isNotBlank()) dns1 else "1.1.1.1"}${if(dns2.isNotBlank()) ",$dns2" else ""} "
+        val args = "$passArg$adminArg$botArg$dnsArg".trim()
 
         val scriptFile = File(context.cacheDir, "deploy.sh")
         val serverFile = File(context.cacheDir, "server")
@@ -640,7 +679,7 @@ private suspend fun performUninstall(
                 "if command -v iptables >/dev/null 2>&1; then " +
                     "for i in 1 2 3 4 5; do " +
                     "for iface in $(ls /sys/class/net 2>/dev/null || true); do " +
-                    "iptables -t nat -D POSTROUTING -s 10.66.66.0/24 -o \"${'$'}iface\" -m comment --comment WDTT_MANAGED -j MASQUERADE 2>/dev/null || true; " +
+                    "iptables -t nat -D POSTROUTING -s 10.66.0.0/16 -o \"${'$'}iface\" -m comment --comment WDTT_MANAGED -j MASQUERADE 2>/dev/null || true; " +
                     "done; " +
                     "iptables -D INPUT -p udp --dport $dtlsPort -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || true; " +
                     "iptables -D INPUT -p udp --dport $wgPort -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || true; " +

@@ -57,23 +57,43 @@ class TunnelService : Service() {
         }
 
         when (intent.action) {
-            "START" -> {
+            "START", "START_FORCED" -> {
                 val notification = createNotification("Запуск...")
                 startPersistentForeground(notification)
 
-                val params = TunnelParams(
-                    peer = intent.getStringExtra("peer") ?: "",
-                    vkHashes = intent.getStringExtra("vk_hashes") ?: "",
-                    secondaryVkHash = intent.getStringExtra("secondary_vk_hash") ?: "",
-                    workersPerHash = intent.getIntExtra("workers_per_hash", 16),
-                    port = intent.getIntExtra("port", 9000),
-                    sni = intent.getStringExtra("sni") ?: "",
-                    connectionPassword = intent.getStringExtra("connection_password") ?: "",
-                    protocol = intent.getStringExtra("protocol") ?: "udp",
-                    captchaMode = sanitizeCaptchaMode(intent.getStringExtra("captcha_mode")),
-                    captchaSolveMethod = intent.getStringExtra("captcha_solve_method") ?: "auto"
-                )
-                startTunnel(params)
+                val appContext = applicationContext
+                TunnelManager.scope.launch {
+                    try {
+                        val store = SettingsStore(appContext)
+                        val basePeer = intent.getStringExtra("peer")?.takeIf { it.isNotEmpty() } ?: store.peer.first()
+                        val manualPortsEnabled = store.manualPortsEnabled.first()
+                        val serverDtlsPort = if (manualPortsEnabled) store.serverDtlsPort.first() else 56000
+                        val peerWithPort = if (basePeer.isBlank() || basePeer.contains(":")) basePeer else "$basePeer:$serverDtlsPort"
+                        
+                        val params = TunnelParams(
+                            peer = peerWithPort,
+                            vkHashes = intent.getStringExtra("vk_hashes")?.takeIf { it.isNotEmpty() } ?: store.vkHashes.first(),
+                            secondaryVkHash = intent.getStringExtra("secondary_vk_hash")?.takeIf { it.isNotEmpty() } ?: store.secondaryVkHash.first(),
+                            workersPerHash = intent.getIntExtra("workers_per_hash", 0).takeIf { it > 0 } ?: store.workersPerHash.first(),
+                            port = intent.getIntExtra("port", 0).takeIf { it > 0 } ?: store.listenPort.first(),
+                            sni = intent.getStringExtra("sni")?.takeIf { it.isNotEmpty() } ?: store.sni.first(),
+                            connectionPassword = intent.getStringExtra("connection_password")?.takeIf { it.isNotEmpty() } ?: store.connectionPassword.first(),
+                            protocol = intent.getStringExtra("protocol")?.takeIf { it.isNotEmpty() } ?: store.protocol.first(),
+                            captchaMode = sanitizeCaptchaMode(intent.getStringExtra("captcha_mode")?.takeIf { it.isNotEmpty() } ?: store.captchaMode.first()),
+                            captchaSolveMethod = intent.getStringExtra("captcha_solve_method")?.takeIf { it.isNotEmpty() } ?: store.captchaSolveMethod.first()
+                        )
+                        launch(Dispatchers.Main) {
+                            if (intent.action == "START_FORCED") {
+                                TunnelManager.showBlockerWarning.value = false
+                                TunnelManager.start(this@TunnelService, params, forceStart = true)
+                            } else {
+                                startTunnel(params)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        launch(Dispatchers.Main) { stopTunnel() }
+                    }
+                }
             }
             "STOP" -> stopTunnel()
             "DEPLOY_START" -> {

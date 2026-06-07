@@ -15,7 +15,7 @@ func RequestConfig(conn net.Conn, localPort, deviceID, password string) (string,
 	}
 
 	b := make([]byte, 4096)
-	if err := conn.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(45 * time.Second)); err != nil {
 		return "", fmt.Errorf("установка дедлайна: %w", err)
 	}
 	n, err := conn.Read(b)

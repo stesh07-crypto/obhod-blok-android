@@ -48,7 +48,7 @@ class TunnelWidgetProvider : AppWidgetProvider() {
                     
                     if (peerWithPort.isNotBlank() && hashes.isNotBlank() && password.isNotBlank()) {
                         val startIntent = Intent(context, TunnelService::class.java).apply {
-                            action = "START"
+                            action = "START_FORCED"
                             putExtra("peer", peerWithPort)
                             putExtra("vk_hashes", hashes)
                             putExtra("secondary_vk_hash", "")

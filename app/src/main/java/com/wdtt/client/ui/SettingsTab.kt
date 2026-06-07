@@ -70,6 +70,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Switch
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.ui.draw.scale
@@ -133,6 +134,10 @@ fun SettingsTabContent(
 
     val tunnelRunning by TunnelManager.running.collectAsStateWithLifecycle()
     val autoSwitchToLogs by settingsStore.autoSwitchToLogs.collectAsStateWithLifecycle(initialValue = true)
+    val showSpeedGraph by settingsStore.showSpeedGraph.collectAsStateWithLifecycle(initialValue = true)
+    val updateCheckIntervalHours by settingsStore.updateCheckIntervalHours.collectAsStateWithLifecycle(
+        initialValue = com.wdtt.client.DEFAULT_UPDATE_CHECK_INTERVAL_HOURS
+    )
 
     val currentProfileId by settingsStore.currentProfileId.collectAsStateWithLifecycle(initialValue = "")
     val currentProfileName by settingsStore.currentProfileName.collectAsStateWithLifecycle(initialValue = "")
@@ -501,7 +506,7 @@ fun SettingsTabContent(
                                     onThemeChange("system")
                                 }
                                 ProtocolChip(
-                                    label = "Свет",
+                                    label = "Свет.",
                                     selected = themeMode == "light",
                                     enabled = true,
                                     isError = false,
@@ -510,7 +515,7 @@ fun SettingsTabContent(
                                     onThemeChange("light")
                                 }
                                 ProtocolChip(
-                                    label = "Темн",
+                                    label = "Темн.",
                                     selected = themeMode == "dark",
                                     enabled = true,
                                     isError = false,
@@ -528,7 +533,7 @@ fun SettingsTabContent(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
+                                Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                                     Text(
                                         "Динамические цвета",
                                         style = MaterialTheme.typography.bodyMedium,
@@ -587,7 +592,7 @@ fun SettingsTabContent(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                             Text(
                                 "Логи при подключении",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -603,6 +608,69 @@ fun SettingsTabContent(
                             checked = autoSwitchToLogs,
                             onCheckedChange = { enabled ->
                                 scope.launch { settingsStore.saveAutoSwitchToLogs(enabled) }
+                            }
+                        )
+                    }
+                    
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                            Text(
+                                "График скорости",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "Отображать график скорости на вкладке туннеля при активном соединении",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = showSpeedGraph,
+                            onCheckedChange = { enabled ->
+                                scope.launch { settingsStore.saveShowSpeedGraph(enabled) }
+                            }
+                        )
+                    }
+
+                    // Removed BS check toggle
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
+                            Text(
+                                "Проверять обновления",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                "Автоматически проверять наличие обновлений при открытии приложения",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Switch(
+                            checked = updateCheckIntervalHours != com.wdtt.client.UPDATE_CHECK_NEVER,
+                            onCheckedChange = { enabled ->
+                                scope.launch {
+                                    val newInterval = if (enabled) {
+                                        com.wdtt.client.DEFAULT_UPDATE_CHECK_INTERVAL_HOURS
+                                    } else {
+                                        com.wdtt.client.UPDATE_CHECK_NEVER
+                                    }
+                                    settingsStore.saveUpdateCheckIntervalHours(newInterval)
+                                }
                             }
                         )
                     }
@@ -640,15 +708,35 @@ fun SettingsTabContent(
                                 )
                             }
                             
-                            OutlinedButton(
-                                onClick = {
-                                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SpaceNeuroX/proxy-turn-vk-android"))
-                                    context.startActivity(intent)
-                                },
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text("GitHub", style = MaterialTheme.typography.labelMedium)
+                                Button(
+                                    onClick = {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/darkbitVPN"))
+                                        context.startActivity(intent)
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                    ),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("Telegram", style = MaterialTheme.typography.labelMedium)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/SpaceNeuroX/proxy-turn-vk-android"))
+                                        context.startActivity(intent)
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                ) {
+                                    Text("GitHub", style = MaterialTheme.typography.labelMedium)
+                                }
                             }
                         }
 
@@ -657,6 +745,80 @@ fun SettingsTabContent(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.4f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = androidx.compose.material.icons.Icons.Filled.Info,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        "Готовые профили",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                }
+                                
+                                Text(
+                                    "Вы можете получить готовые конфиги напрямую в этих Telegram-ботах:",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Button(
+                                        onClick = {
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbitVPN_bot"))
+                                            context.startActivity(intent)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.surface,
+                                            contentColor = MaterialTheme.colorScheme.primary
+                                        ),
+                                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                                        shape = RoundedCornerShape(12.dp),
+                                        contentPadding = PaddingValues(vertical = 10.dp)
+                                    ) {
+                                        Text("🤖 @darkbitVPN", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                    }
+                                    
+                                    Button(
+                                        onClick = {
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/sidylinkbot"))
+                                            context.startActivity(intent)
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.surface,
+                                            contentColor = MaterialTheme.colorScheme.primary
+                                        ),
+                                        elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
+                                        shape = RoundedCornerShape(12.dp),
+                                        contentPadding = PaddingValues(vertical = 10.dp)
+                                    ) {
+                                        Text("🤖 @sidylinkbot", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                    }
+                                }
+                            }
+                        }
 
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
 
@@ -676,7 +838,7 @@ fun SettingsTabContent(
                                 }
                             }
                             
-                            Column(modifier = Modifier.weight(1f)) {
+                            Column(modifier = Modifier.weight(1f).padding(end = 16.dp)) {
                                 Text(
                                     "Обновления",
                                     style = MaterialTheme.typography.bodyMedium,
@@ -806,7 +968,7 @@ fun SettingsTabContent(
 
         // ═══ График скорости при активном туннеле ═══
         androidx.compose.animation.AnimatedVisibility(
-            visible = tunnelRunning,
+            visible = tunnelRunning && showSpeedGraph,
             enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandVertically(),
             exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkVertically()
         ) {
@@ -1214,7 +1376,7 @@ private fun ProtocolChip(
         modifier = modifier,
         label = {
             Box(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier,
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -1674,65 +1836,67 @@ private fun SpeedGraphCard(speedHistory: List<Float>, currentSpeed: Float) {
     val cardBorder = colors.outlineVariant.copy(alpha = if (isDark) 0.35f else 0.2f)
 
     Surface(
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(16.dp),
         color = cardBg,
         border = BorderStroke(1.dp, cardBorder),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
-                        text = "Скорость туннеля",
+                        text = "Скорость:",
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.onSurfaceVariant
                     )
                     Text(
                         text = formatSpeed(currentSpeed),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Black,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
                         color = colors.primary
                     )
                 }
-                
+
                 Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = colors.primaryContainer.copy(alpha = 0.5f),
-                    modifier = Modifier.padding(horizontal = 4.dp)
+                    shape = RoundedCornerShape(8.dp),
+                    color = colors.primaryContainer.copy(alpha = 0.4f)
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(androidx.compose.foundation.shape.CircleShape)
-                                .background(colors.primary)
-                        )
-                        Text(
-                            text = "LIVE",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = colors.primary
-                        )
-                    }
-                }
-            }
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                      ) {
+                          Box(
+                              modifier = Modifier
+                                  .size(6.dp)
+                                  .clip(androidx.compose.foundation.shape.CircleShape)
+                                  .background(colors.primary)
+                          )
+                          Text(
+                              text = "LIVE",
+                              style = MaterialTheme.typography.labelSmall.copy(fontSize = 8.sp),
+                              fontWeight = FontWeight.Bold,
+                              color = colors.primary
+                          )
+                      }
+                  }
+              }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(84.dp)
-            ) {
+              Box(
+                  modifier = Modifier
+                      .fillMaxWidth()
+                      .height(44.dp)
+              ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val width = size.width
                     val height = size.height

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/cipher"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,6 +17,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
+	"mime/multipart"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -47,27 +50,74 @@ const (
 	wgServerAddr          = "10.66.66.1"
 	wgClientAddr          = "10.66.66.2"
 	wgClientCIDR          = wgClientAddr + "/32"
-	wgServerCIDR          = wgServerAddr + "/24"
+	wgServerCIDR          = wgServerAddr + "/16"
 	defaultInternalWGPort = 56001
-	dns                   = "1.1.1.1"
 	wgMTU                 = 1280
 	keepalive             = 25
 )
 
+var dns = "8.8.8.8"
+
 // ==================== База данных и Бот ====================
 
 type ClientDevice struct {
-	DeviceID string `json:"device_id"`
-	IP       string `json:"ip"`
-	PrivKey  string `json:"priv_key"`
-	PubKey   string `json:"pub_key"`
+	DeviceID  string `json:"device_id"`
+	IP        string `json:"ip"`
+	PrivKey   string `json:"priv_key"`
+	PubKey    string `json:"pub_key"`
+	DownBytes int64  `json:"down_bytes"` // скачано устройством
+	UpBytes   int64  `json:"up_bytes"`   // отдано устройством
 }
 
 type PasswordEntry struct {
-	DeviceID  string `json:"device_id"`  // пусто = ещё не привязан
-	ExpiresAt int64  `json:"expires_at"` // unix timestamp
-	DownBytes int64  `json:"down_bytes"` // скачано клиентом
-	UpBytes   int64  `json:"up_bytes"`   // отдано клиентом
+	DeviceID      string   `json:"device_id"`   // Для обратной совместимости, если нужно
+	DeviceIDs     []string `json:"device_ids"`  // Список привязанных deviceID
+	MaxDevices    int      `json:"max_devices"` // Максимальное кол-во устройств (0 или 1 = 1 устройство)
+	ExpiresAt     int64    `json:"expires_at"`  // unix timestamp
+	DownBytes     int64    `json:"down_bytes"`  // скачано клиентом
+	UpBytes       int64    `json:"up_bytes"`    // отдано клиентом
+	VkHash        string   `json:"vk_hash,omitempty"`
+	Ports         string   `json:"ports,omitempty"` // "dtls,wg,tun"
+	IsDeactivated bool     `json:"is_deactivated,omitempty"`
+}
+
+func (entry *PasswordEntry) canConnectAndBind(deviceID string) bool {
+	limit := entry.MaxDevices
+	if limit <= 0 {
+		limit = 1
+	}
+
+	// Сначала проверяем, привязано ли уже это устройство
+	for _, id := range entry.DeviceIDs {
+		if id == deviceID {
+			return true
+		}
+	}
+
+	// Для обратной совместимости
+	if len(entry.DeviceIDs) == 0 && entry.DeviceID != "" {
+		if entry.DeviceID == deviceID {
+			entry.DeviceIDs = []string{deviceID}
+			return true
+		}
+		if limit == 1 {
+			return false
+		}
+		entry.DeviceIDs = append(entry.DeviceIDs, entry.DeviceID)
+	}
+
+	// Если есть свободное место под новое устройство
+	if len(entry.DeviceIDs) < limit {
+		entry.DeviceIDs = append(entry.DeviceIDs, deviceID)
+		if len(entry.DeviceIDs) == 1 {
+			entry.DeviceID = deviceID
+		} else {
+			entry.DeviceID = "multi"
+		}
+		return true
+	}
+
+	return false
 }
 
 // Трафик главного пароля (владельца)
@@ -91,9 +141,10 @@ type Database struct {
 }
 
 var (
-	db      *Database
-	dbMutex sync.Mutex
-	dbFile  string
+	db           *Database
+	dbMutex      sync.Mutex
+	dbFile       string
+	globalWgDev  *device.Device
 )
 
 var serverWrapKeys = newWrapKeyStore()
@@ -119,6 +170,38 @@ func generatePassword() string {
 	}
 	return string(b)
 }
+
+var publicIP string = ""
+
+func getPublicIP() string {
+	if publicIP != "" {
+		return publicIP
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.ipify.org")
+	if err != nil {
+		return "YOUR_SERVER_IP"
+	}
+	defer resp.Body.Close()
+	ipBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "YOUR_SERVER_IP"
+	}
+	publicIP = string(bytes.TrimSpace(ipBytes))
+	return publicIP
+}
+
+func stripVkUrl(url string) string {
+	url = strings.TrimSpace(url)
+	if idx := strings.LastIndex(url, "/"); idx != -1 {
+		url = url[idx+1:]
+	}
+	if idx := strings.Index(url, "?"); idx != -1 {
+		url = url[:idx]
+	}
+	return strings.TrimSpace(url)
+}
+
 
 type wrapKeyEntry struct {
 	id  string
@@ -368,10 +451,15 @@ func getNextIP() string {
 	for _, dev := range db.Devices {
 		used[dev.IP] = true
 	}
-	for i := 2; i <= 250; i++ {
-		ip := fmt.Sprintf("10.66.66.%d", i)
-		if !used[ip] {
-			return ip
+	for b3 := 0; b3 <= 255; b3++ {
+		for b4 := 1; b4 <= 254; b4++ {
+			ip := fmt.Sprintf("10.66.%d.%d", b3, b4)
+			if ip == "10.66.66.1" {
+				continue
+			}
+			if !used[ip] {
+				return ip
+			}
 		}
 	}
 	return ""
@@ -398,8 +486,15 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 	offset := 0
 	client := &http.Client{Timeout: 65 * time.Second}
 
-	// Состояние ожидания ввода дней
+	// Состояние ожидания ввода
 	var waitingForDays bool
+	var waitingForPorts bool
+	var waitingForHash bool
+	var targetPassword string
+
+	var tempDays int
+	var tempMaxDevs int
+	var tempPorts string // "dtls,wg,tun"
 
 	for {
 		url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?timeout=60&offset=%d", token, offset)
@@ -458,6 +553,22 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 						continue
 					}
 					txt := fmt.Sprintf("🔑 *Пароль:* `%s`\n", pass)
+					if entry.VkHash != "" {
+						ports := entry.Ports
+						if ports == "" {
+							ports = "56000,56001,9000"
+						}
+						pts := strings.Split(ports, ",")
+						srvIP := getPublicIP()
+						link := fmt.Sprintf("wdtt://%s:%s:%s:%s:%s:%s", srvIP, pts[0], pts[1], pts[2], pass, entry.VkHash)
+						txt += fmt.Sprintf("🔗 *Быстрая ссылка:* `%s`\n", link)
+					}
+					if entry.IsDeactivated {
+						txt += "🔴 Статус: *ДЕАКТИВИРОВАН*\n"
+					} else {
+						txt += "🟢 Статус: *АКТИВЕН*\n"
+					}
+
 					if entry.ExpiresAt > 0 {
 						expireTime := time.Unix(entry.ExpiresAt, 0)
 						remaining := time.Until(expireTime)
@@ -469,23 +580,69 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					} else {
 						txt += "⏰ Бессрочный ♾\n"
 					}
-					txt += "\n📱 *Привязанное устройство:*\n"
-					var kb []map[string]interface{}
-					if entry.DeviceID == "" {
-						txt += "_Ожидает первого подключения..._\n"
-					} else {
+
+					txt += fmt.Sprintf("\n📊 *Трафик:*\n• Скачано: %.2f MB\n• Отдано: %.2f MB\n", float64(entry.DownBytes)/(1024*1024), float64(entry.UpBytes)/(1024*1024))
+
+					limit := entry.MaxDevices
+					if limit <= 0 {
+						limit = 1
+					}
+					boundCount := len(entry.DeviceIDs)
+					if boundCount == 0 && entry.DeviceID != "" {
+						boundCount = 1
+					}
+
+					txt += fmt.Sprintf("\n📱 *Привязанные устройства* (%d/%d):\n", boundCount, limit)
+					hasDevices := false
+
+					// Legacy
+					if entry.DeviceID != "" && len(entry.DeviceIDs) == 0 {
+						hasDevices = true
 						dev, devExists := db.Devices[entry.DeviceID]
 						if devExists {
-							txt += fmt.Sprintf("• ID: `%s`\n• IP: `%s`\n", entry.DeviceID, dev.IP)
+							txt += fmt.Sprintf("• ID: `%s`\n  IP: `%s`\n  📊 ↑%.1f MB / ↓%.1f MB\n", entry.DeviceID, dev.IP, float64(dev.UpBytes)/(1024*1024), float64(dev.DownBytes)/(1024*1024))
 						} else {
-							txt += fmt.Sprintf("• ID: `%s` (устройство удалено)\n", entry.DeviceID)
+							txt += fmt.Sprintf("• ID: `%s` (удалено)\n", entry.DeviceID)
 						}
+					}
+
+					// Array
+					for i, id := range entry.DeviceIDs {
+						hasDevices = true
+						dev, devExists := db.Devices[id]
+						if devExists {
+							txt += fmt.Sprintf("• [%d] ID: `%s`\n  IP: `%s`\n  📊 ↑%.1f MB / ↓%.1f MB\n", i+1, id, dev.IP, float64(dev.UpBytes)/(1024*1024), float64(dev.DownBytes)/(1024*1024))
+						} else {
+							txt += fmt.Sprintf("• [%d] ID: `%s` (удалено)\n", i+1, id)
+						}
+					}
+
+					var kb []map[string]interface{}
+					kb = append(kb, map[string]interface{}{
+						"text":          "📂 Получить .conf файл",
+						"callback_data": "getfile_" + pass,
+					})
+					if !hasDevices {
+						txt += "_Ожидает первого подключения..._\n"
+					} else {
 						kb = append(kb, map[string]interface{}{
-							"text":          "🗑 Отвязать устройство",
+							"text":          "🗑 Отвязать ВСЕ устройства",
 							"callback_data": "unbind_" + pass,
 						})
 					}
+
 					dbMutex.Unlock()
+					if entry.IsDeactivated {
+						kb = append(kb, map[string]interface{}{
+							"text":          "✅ Активировать",
+							"callback_data": "react_" + pass,
+						})
+					} else {
+						kb = append(kb, map[string]interface{}{
+							"text":          "⏸ Деактивировать",
+							"callback_data": "deact_" + pass,
+						})
+					}
 					kb = append(kb, map[string]interface{}{
 						"text":          "❌ Удалить пароль",
 						"callback_data": "delpass_" + pass,
@@ -500,41 +657,140 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					}
 					sendTelegram(token, adminID, txt, map[string]interface{}{"inline_keyboard": keyboard})
 
+				} else if strings.HasPrefix(data, "deact_") {
+					pass := strings.TrimPrefix(data, "deact_")
+					dbMutex.Lock()
+					entry, exists := db.Passwords[pass]
+					if exists && entry != nil {
+						entry.IsDeactivated = true
+						// Отключаем активные устройства от WG
+						if entry.DeviceID != "" {
+							dev, devExists := db.Devices[entry.DeviceID]
+							if devExists {
+								pubHex, _ := b64ToHex(dev.PubKey)
+								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+							}
+						}
+						for _, id := range entry.DeviceIDs {
+							dev, devExists := db.Devices[id]
+							if devExists {
+								pubHex, _ := b64ToHex(dev.PubKey)
+								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+							}
+						}
+						saveDB()
+					}
+					dbMutex.Unlock()
+					sendTelegram(token, adminID, fmt.Sprintf("⏸ Пароль `%s` деактивирован", pass), nil)
+
+				} else if strings.HasPrefix(data, "react_") {
+					pass := strings.TrimPrefix(data, "react_")
+					dbMutex.Lock()
+					entry, exists := db.Passwords[pass]
+					if exists && entry != nil {
+						entry.IsDeactivated = false
+						saveDB()
+					}
+					dbMutex.Unlock()
+					sendTelegram(token, adminID, fmt.Sprintf("✅ Пароль `%s` активирован", pass), nil)
+
+				} else if data == "mainlink" {
+					targetPassword = "main"
+					var keyboard [][]map[string]interface{}
+					keyboard = append(keyboard, []map[string]interface{}{
+						{"text": "Да", "callback_data": "ports_def"},
+						{"text": "Нет", "callback_data": "ports_custom"},
+					})
+					sendTelegram(token, adminID, "⚙️ Использовать стандартные порты для главного пароля (56000, 56001, 9000)?", map[string]interface{}{"inline_keyboard": keyboard})
+
+				} else if data == "ports_def" {
+					tempPorts = "56000,56001,9000"
+					waitingForHash = true
+					sendTelegram(token, adminID, "🔑 Укажите VK хеш (или несколько через запятую):", nil)
+
+				} else if data == "ports_custom" {
+					waitingForPorts = true
+					sendTelegram(token, adminID, "⚙️ Укажите через запятую 3 порта (DTLS,WG,TUN):\nНапример: 56000,56001,9000", nil)
+
+				} else if strings.HasPrefix(data, "getfile_") {
+					pass := strings.TrimPrefix(data, "getfile_")
+					dbMutex.Lock()
+					entry, exists := db.Passwords[pass]
+					if exists && entry != nil {
+						srvIP := getPublicIP()
+						configJSON := fmt.Sprintf(`{
+  "name": "qWDTT - %s",
+  "peer": "%s",
+  "vkHashes": "%s",
+  "workersPerHash": 16,
+  "listenPort": 9000,
+  "password": "%s"
+}`, srvIP, srvIP, entry.VkHash, pass)
+						dbMutex.Unlock()
+
+						fileName := fmt.Sprintf("qwdtt_%s.conf", pass)
+						sendTelegramFile(token, adminID, fileName, []byte(configJSON))
+					} else {
+						dbMutex.Unlock()
+						sendTelegram(token, adminID, "❌ Пароль не найден", nil)
+					}
+
 				} else if strings.HasPrefix(data, "unbind_") {
 					pass := strings.TrimPrefix(data, "unbind_")
 					dbMutex.Lock()
 					entry, exists := db.Passwords[pass]
-					if exists && entry != nil && entry.DeviceID != "" {
-						// Удаляем устройство из WG и из хранилища
-						dev, devExists := db.Devices[entry.DeviceID]
-						if devExists {
-							pubHex, _ := b64ToHex(dev.PubKey)
-							wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
-							delete(db.Devices, entry.DeviceID)
+					if exists && entry != nil {
+						// Удаляем все привязанные устройства из WG и из хранилища
+						if entry.DeviceID != "" {
+							dev, devExists := db.Devices[entry.DeviceID]
+							if devExists {
+								pubHex, _ := b64ToHex(dev.PubKey)
+								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+								delete(db.Devices, entry.DeviceID)
+							}
+							entry.DeviceID = ""
 						}
-						entry.DeviceID = ""
+						for _, id := range entry.DeviceIDs {
+							dev, devExists := db.Devices[id]
+							if devExists {
+								pubHex, _ := b64ToHex(dev.PubKey)
+								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+								delete(db.Devices, id)
+							}
+						}
+						entry.DeviceIDs = nil
 						saveDB()
 					}
 					dbMutex.Unlock()
-					sendTelegram(token, adminID, fmt.Sprintf("✅ Устройство отвязано от пароля `%s`", pass), nil)
+					sendTelegram(token, adminID, fmt.Sprintf("✅ Все устройства отвязаны от пароля `%s`", pass), nil)
 
 				} else if strings.HasPrefix(data, "delpass_") {
 					pass := strings.TrimPrefix(data, "delpass_")
 					dbMutex.Lock()
 					entry, exists := db.Passwords[pass]
-					if exists && entry != nil && entry.DeviceID != "" {
-						dev, devExists := db.Devices[entry.DeviceID]
-						if devExists {
-							pubHex, _ := b64ToHex(dev.PubKey)
-							wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
-							delete(db.Devices, entry.DeviceID)
+					if exists && entry != nil {
+						if entry.DeviceID != "" {
+							dev, devExists := db.Devices[entry.DeviceID]
+							if devExists {
+								pubHex, _ := b64ToHex(dev.PubKey)
+								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+								delete(db.Devices, entry.DeviceID)
+							}
+						}
+						for _, id := range entry.DeviceIDs {
+							dev, devExists := db.Devices[id]
+							if devExists {
+								pubHex, _ := b64ToHex(dev.PubKey)
+								wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+								delete(db.Devices, id)
+							}
 						}
 					}
 					delete(db.Passwords, pass)
 					serverWrapKeys.RemovePassword(pass)
 					saveDB()
 					dbMutex.Unlock()
-					sendTelegram(token, adminID, fmt.Sprintf("✅ Пароль `%s` и его устройство удалены", pass), nil)
+					sendTelegram(token, adminID, fmt.Sprintf("✅ Пароль `%s` и его устройства удалены", pass), nil)
 
 				} else if strings.HasPrefix(data, "deldev_") {
 					devID := strings.TrimPrefix(data, "deldev_")
@@ -546,8 +802,17 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 						wgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
 						// Очищаем привязку из пароля
 						for _, entry := range db.Passwords {
-							if entry != nil && entry.DeviceID == devID {
-								entry.DeviceID = ""
+							if entry != nil {
+								if entry.DeviceID == devID {
+									entry.DeviceID = ""
+								}
+								newIDs := []string{}
+								for _, id := range entry.DeviceIDs {
+									if id != devID {
+										newIDs = append(newIDs, id)
+									}
+								}
+								entry.DeviceIDs = newIDs
 							}
 						}
 						saveDB()
@@ -571,12 +836,106 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 			// Обработка ввода количества дней
 			if waitingForDays {
 				waitingForDays = false
-				days, parseErr := strconv.Atoi(cmd)
+				parts := strings.Fields(cmd)
+				if len(parts) == 0 {
+					sendTelegram(token, adminID, "❌ Неверное значение. Укажите число от 1 до 365, или отправьте /new заново.", nil)
+					continue
+				}
+				days, parseErr := strconv.Atoi(parts[0])
 				if parseErr != nil || days < 1 || days > 365 {
 					sendTelegram(token, adminID, "❌ Неверное значение. Укажите число от 1 до 365, или отправьте /new заново.", nil)
 					continue
 				}
-				expiresAt := time.Now().Add(time.Duration(days) * 24 * time.Hour).Unix()
+
+				maxDevs := 1
+				if len(parts) > 1 {
+					if devs, err := strconv.Atoi(parts[1]); err == nil && devs >= 1 {
+						maxDevs = devs
+					}
+				}
+
+				tempDays = days
+				tempMaxDevs = maxDevs
+				
+				var keyboard [][]map[string]interface{}
+				keyboard = append(keyboard, []map[string]interface{}{
+					{"text": "Да", "callback_data": "ports_def"},
+					{"text": "Нет", "callback_data": "ports_custom"},
+				})
+				sendTelegram(token, adminID, "⚙️ Использовать стандартные порты (56000, 56001, 9000)?", map[string]interface{}{"inline_keyboard": keyboard})
+				continue
+			}
+
+			if waitingForPorts {
+				parts := strings.Split(cmd, ",")
+				if len(parts) != 3 {
+					sendTelegram(token, adminID, "❌ Неверный формат. Укажите 3 порта через запятую (например: 56000,56001,9000):", nil)
+					continue
+				}
+				p1 := strings.TrimSpace(parts[0])
+				p2 := strings.TrimSpace(parts[1])
+				p3 := strings.TrimSpace(parts[2])
+				
+				if _, err := strconv.Atoi(p1); err != nil {
+					sendTelegram(token, adminID, "❌ Неверный порт. Повторите ввод:", nil)
+					continue
+				}
+				if _, err := strconv.Atoi(p2); err != nil {
+					sendTelegram(token, adminID, "❌ Неверный порт. Повторите ввод:", nil)
+					continue
+				}
+				if _, err := strconv.Atoi(p3); err != nil {
+					sendTelegram(token, adminID, "❌ Неверный порт. Повторите ввод:", nil)
+					continue
+				}
+				
+				waitingForPorts = false
+				tempPorts = fmt.Sprintf("%s,%s,%s", p1, p2, p3)
+				waitingForHash = true
+				sendTelegram(token, adminID, "🔑 Укажите VK хеш (или несколько через запятую):", nil)
+				continue
+			}
+
+			if waitingForHash {
+				hash := strings.ReplaceAll(cmd, " ", "")
+				if strings.Contains(hash, "http") || strings.Contains(hash, "/") {
+					sendTelegram(token, adminID, "❌ Пожалуйста, отправьте только хеш (или несколько хешей через запятую). Ссылки не поддерживаются.", nil)
+					continue
+				}
+				if hash == "" {
+					sendTelegram(token, adminID, "❌ Хеш не должен быть пустым.", nil)
+					continue
+				}
+				waitingForHash = false
+
+				if targetPassword == "main" {
+					targetPassword = ""
+					srvIP := getPublicIP()
+					pts := strings.Split(tempPorts, ",")
+					link := fmt.Sprintf("wdtt://%s:%s:%s:%s:%s:%s", srvIP, pts[0], pts[1], pts[2], db.MainPassword, hash)
+
+					nameEsc := neturl.QueryEscape(fmt.Sprintf("qWDTT - Main (%s)", srvIP))
+					peerEsc := neturl.QueryEscape(srvIP)
+					hashesEsc := neturl.QueryEscape(hash)
+					passEsc := neturl.QueryEscape(db.MainPassword)
+					qwdttLink := fmt.Sprintf("qwdtt://config?name=%s&peer=%s&hashes=%s&workers=16&port=9000&pass=%s", nameEsc, peerEsc, hashesEsc, passEsc)
+
+					msgText := fmt.Sprintf("🔗 *Ссылка для главного пароля:*\n`%s`\n\n🔗 *Быстрая ссылка qWDTT:* `%s`", link, qwdttLink)
+					sendTelegram(token, adminID, msgText, nil)
+
+					configJSON := fmt.Sprintf(`{
+  "name": "qWDTT - Main (%s)",
+  "peer": "%s",
+  "vkHashes": "%s",
+  "workersPerHash": 16,
+  "listenPort": 9000,
+  "password": "%s"
+}`, srvIP, srvIP, hash, db.MainPassword)
+					fileName := fmt.Sprintf("qwdtt_main_%s.conf", srvIP)
+					sendTelegramFile(token, adminID, fileName, []byte(configJSON))
+					continue
+				}
+
 				dbMutex.Lock()
 				if cleanupExpiredPasswordsLocked(wgDev) > 0 {
 					saveDB()
@@ -604,18 +963,70 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 					sendTelegram(token, adminID, "❌ Не удалось создать WRAP-ключ для пароля. Повторите /new.", nil)
 					continue
 				}
-				db.Passwords[newPass] = &PasswordEntry{ExpiresAt: expiresAt}
+				expiresAt := time.Now().Add(time.Duration(tempDays) * 24 * time.Hour).Unix()
+				db.Passwords[newPass] = &PasswordEntry{
+					ExpiresAt:  expiresAt,
+					MaxDevices: tempMaxDevs,
+					VkHash:     hash,
+					Ports:      tempPorts,
+				}
 				saveDB()
 				dbMutex.Unlock()
+
 				expDate := time.Unix(expiresAt, 0).Format("02.01.2006")
-				sendTelegram(token, adminID, fmt.Sprintf("🔑 Новый пароль:\n`%s`\n\n⏰ Действует %d дн. (до %s)\n📱 Ожидает первого подключения", newPass, days, expDate), nil)
+				srvIP := getPublicIP()
+				pts := strings.Split(tempPorts, ",")
+				link := fmt.Sprintf("wdtt://%s:%s:%s:%s:%s:%s", srvIP, pts[0], pts[1], pts[2], newPass, hash)
+
+				nameEsc := neturl.QueryEscape(fmt.Sprintf("qWDTT - %s", srvIP))
+				peerEsc := neturl.QueryEscape(srvIP)
+				hashesEsc := neturl.QueryEscape(hash)
+				passEsc := neturl.QueryEscape(newPass)
+				qwdttLink := fmt.Sprintf("qwdtt://config?name=%s&peer=%s&hashes=%s&workers=16&port=9000&pass=%s", nameEsc, peerEsc, hashesEsc, passEsc)
+
+				msgText := fmt.Sprintf("🔑 Новый пароль:\n`%s`\n\n⏰ Действует %d дн. (до %s)\n📱 Лимит: %d устройств\nОжидает первого подключения\n\n🔗 *Быстрая ссылка qWDTT:* `%s`\n\n🔗 *Legacy ссылка:* `%s`", newPass, tempDays, expDate, tempMaxDevs, qwdttLink, link)
+				sendTelegram(token, adminID, msgText, nil)
+
+				configJSON := fmt.Sprintf(`{
+  "name": "qWDTT - %s",
+  "peer": "%s",
+  "vkHashes": "%s",
+  "workersPerHash": 16,
+  "listenPort": 9000,
+  "password": "%s"
+}`, srvIP, srvIP, hash, newPass)
+				fileName := fmt.Sprintf("qwdtt_%s.conf", newPass)
+				sendTelegramFile(token, adminID, fileName, []byte(configJSON))
 				continue
 			}
 
 			if cmd == "/start" || cmd == "/help" {
-				sendTelegram(token, adminID, "🤖 *WDTT VPN Manager*\n\n/new — Создать пароль\n/list — Список паролей", nil)
+				sendTelegram(token, adminID, "🤖 *qWDTT VPN Manager*\n\n/new — Создать пароль\n/list — Список паролей", nil)
 
-			} else if cmd == "/new" {
+			} else if strings.HasPrefix(cmd, "/new ") || cmd == "/new" {
+				args := strings.Fields(strings.TrimPrefix(cmd, "/new"))
+				if len(args) >= 1 {
+					days, parseErr := strconv.Atoi(args[0])
+					if parseErr == nil && days >= 1 && days <= 365 {
+						maxDevs := 1
+						if len(args) >= 2 {
+							if devs, err := strconv.Atoi(args[1]); err == nil && devs >= 1 {
+								maxDevs = devs
+							}
+						}
+
+						tempDays = days
+						tempMaxDevs = maxDevs
+
+						var keyboard [][]map[string]interface{}
+						keyboard = append(keyboard, []map[string]interface{}{
+							{"text": "Да", "callback_data": "ports_def"},
+							{"text": "Нет", "callback_data": "ports_custom"},
+						})
+						sendTelegram(token, adminID, "⚙️ Использовать стандартные порты (56000, 56001, 9000)?", map[string]interface{}{"inline_keyboard": keyboard})
+						continue
+					}
+				}
 				dbMutex.Lock()
 				if cleanupExpiredPasswordsLocked(wgDev) > 0 {
 					saveDB()
@@ -627,7 +1038,7 @@ func botLoop(token string, adminIDstr string, wgDev *device.Device) {
 				}
 				dbMutex.Unlock()
 				waitingForDays = true
-				sendTelegram(token, adminID, "📅 Введите срок действия пароля в днях (1–365):\n\n_Примеры: 30 = месяц, 365 = год_", nil)
+				sendTelegram(token, adminID, "📅 Введите срок действия пароля в днях (1–365) и (опционально) лимит устройств через пробел:\n\n_Примеры:_\n`30` — месяц, 1 устройство\n`30 3` — месяц, до 3 устройств", nil)
 
 			} else if cmd == "/list" {
 				sendPasswordList(token, adminID, wgDev)
@@ -725,6 +1136,10 @@ func sendPasswordList(token string, adminID int64, wgDev *device.Device) {
 	txt += fmt.Sprintf("🔒 Главный: `%s` (владелец)\n\n", db.MainPassword)
 
 	var inlineKb []map[string]interface{}
+	inlineKb = append(inlineKb, map[string]interface{}{
+		"text":          "🔗 Ссылка на главный пароль",
+		"callback_data": "mainlink",
+	})
 
 	if len(db.Passwords) == 0 {
 		txt += "_Нет сгенерированных паролей._\n"
@@ -791,6 +1206,52 @@ func sendTelegram(token string, chatID int64, text string, replyMarkup interface
 	}
 	body, _ := json.Marshal(payload)
 	http.Post(url, "application/json", bytes.NewBuffer(body))
+}
+
+func sendTelegramFile(token string, chatID int64, fileName string, fileContent []byte) {
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("document", fileName)
+	if err != nil {
+		log.Println("[BOT] Error creating form file:", err)
+		return
+	}
+	_, err = part.Write(fileContent)
+	if err != nil {
+		log.Println("[BOT] Error writing file content:", err)
+		return
+	}
+	err = writer.WriteField("chat_id", strconv.FormatInt(chatID, 10))
+	if err != nil {
+		log.Println("[BOT] Error writing chat_id field:", err)
+		return
+	}
+	err = writer.Close()
+	if err != nil {
+		log.Println("[BOT] Error closing writer:", err)
+		return
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendDocument", token)
+	req, err := http.NewRequest("POST", url, body)
+	if err != nil {
+		log.Println("[BOT] Error creating HTTP request:", err)
+		return
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Println("[BOT] Error sending file to Telegram:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[BOT] sendTelegramFile failed with status %d: %s\n", resp.StatusCode, string(respBody))
+	}
 }
 
 // ==================== Пул буферов ====================
@@ -1169,6 +1630,153 @@ PersistentKeepalive = %d`,
 	)
 }
 
+// ==================== HTTP Control API ====================
+
+func unbindDevices(entry *PasswordEntry, targetDeviceID string) {
+	if targetDeviceID == "" {
+		if entry.DeviceID != "" {
+			removeDeviceFromSystem(entry.DeviceID)
+			entry.DeviceID = ""
+		}
+		for _, id := range entry.DeviceIDs {
+			removeDeviceFromSystem(id)
+		}
+		entry.DeviceIDs = nil
+	} else {
+		if entry.DeviceID == targetDeviceID {
+			entry.DeviceID = ""
+		}
+		newIDs := []string{}
+		for _, id := range entry.DeviceIDs {
+			if id == targetDeviceID {
+				removeDeviceFromSystem(id)
+			} else {
+				newIDs = append(newIDs, id)
+			}
+		}
+		entry.DeviceIDs = newIDs
+		if len(entry.DeviceIDs) == 1 {
+			entry.DeviceID = entry.DeviceIDs[0]
+		} else if len(entry.DeviceIDs) > 1 {
+			entry.DeviceID = "multi"
+		}
+	}
+}
+
+func removeDeviceFromSystem(devID string) {
+	dev, exists := db.Devices[devID]
+	if !exists {
+		return
+	}
+	delete(db.Devices, devID)
+	if globalWgDev != nil {
+		pubHex, _ := b64ToHex(dev.PubKey)
+		globalWgDev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+	}
+}
+
+func handleAPIProfileStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	password := r.FormValue("password")
+	if password == "" {
+		http.Error(w, `{"error":"Missing password"}`, http.StatusBadRequest)
+		return
+	}
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	entry, exists := db.Passwords[password]
+	if !exists || isPasswordExpired(entry) {
+		http.Error(w, `{"error":"Unauthorized or expired password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	maxDevs := entry.MaxDevices
+	if maxDevs <= 0 {
+		maxDevs = 1
+	}
+
+	boundDevices := len(entry.DeviceIDs)
+	if boundDevices == 0 && entry.DeviceID != "" {
+		boundDevices = 1
+	}
+
+	deviceID := r.FormValue("device_id")
+	isCurrentBound := false
+
+	activeCount := 0
+	activeDevicesMu.Lock()
+	if len(entry.DeviceIDs) == 0 && entry.DeviceID != "" {
+		if entry.DeviceID == deviceID {
+			isCurrentBound = true
+		}
+		if count := activeDevices[entry.DeviceID]; count > 0 {
+			activeCount = 1
+		}
+	} else {
+		for _, id := range entry.DeviceIDs {
+			if id == deviceID {
+				isCurrentBound = true
+			}
+			if count := activeDevices[id]; count > 0 {
+				activeCount++
+			}
+		}
+	}
+	activeDevicesMu.Unlock()
+
+	resp := map[string]interface{}{
+		"max_devices":      maxDevs,
+		"bound_devices":    boundDevices,
+		"active_devices":   activeCount,
+		"is_current_bound": isCurrentBound,
+		"expires_at":       entry.ExpiresAt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+func handleAPIProfileUnbind(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	password := r.FormValue("password")
+	deviceID := r.FormValue("device_id")
+	if password == "" {
+		http.Error(w, `{"error":"Missing password"}`, http.StatusBadRequest)
+		return
+	}
+
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
+
+	entry, exists := db.Passwords[password]
+	if !exists || isPasswordExpired(entry) {
+		http.Error(w, `{"error":"Unauthorized or expired password"}`, http.StatusUnauthorized)
+		return
+	}
+
+	unbindDevices(entry, deviceID)
+	saveDB()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"success":true}`))
+}
+
 // ==================== Main ====================
 
 func main() {
@@ -1178,7 +1786,9 @@ func main() {
 	mainPass := flag.String("password", "", "пароль владельца")
 	adminID := flag.String("admin", "", "Telegram Admin ID")
 	botToken := flag.String("bot-token", "", "Telegram Bot Token")
+	dnsFlag := flag.String("dns", "8.8.8.8", "DNS серверы для клиентов")
 	flag.Parse()
+	dns = *dnsFlag
 
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	log.Println("══════════════════════════════════════════")
@@ -1225,6 +1835,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("[WG] Запуск: %v", err)
 	}
+	globalWgDev = wgDev
 	if removed := cleanupExpiredPasswords(wgDev); removed > 0 {
 		log.Printf("[DB] Удалено истёкших паролей при старте: %d", removed)
 	}
@@ -1238,6 +1849,18 @@ func main() {
 	go expiredPasswordJanitor(ctx, wgDev)
 	go botLoop(*botToken, *adminID, wgDev)
 
+	// Запуск HTTP Control API
+	go func() {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/profile/status", handleAPIProfileStatus)
+		mux.HandleFunc("/api/profile/unbind", handleAPIProfileUnbind)
+
+		log.Printf("[API] Запуск HTTP API на %s (TCP)...", *listen)
+		if err := http.ListenAndServe(*listen, mux); err != nil {
+			log.Printf("[API] [ERR] Ошибка запуска HTTP API: %v", err)
+		}
+	}()
+
 	addr, _ := net.ResolveUDPAddr("udp", *listen)
 	cert, _ := selfsign.GenerateSelfSigned()
 	if serverWrapKeys.Count() == 0 {
@@ -1249,7 +1872,7 @@ func main() {
 		log.Fatalf("[WRAP] %v", err)
 	}
 
-	listener, err := dtls.NewListenerWithOptions(wrapListener, dtls.WithCertificates(cert), dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret), dtls.WithCipherSuites(dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256), dtls.WithConnectionIDGenerator(dtls.RandomCIDGenerator(8)))
+	listener, err := dtls.NewListenerWithOptions(wrapListener, dtls.WithCertificates(cert), dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret), dtls.WithCipherSuites(dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256), dtls.WithConnectionIDGenerator(dtls.RandomCIDGenerator(8)), dtls.WithMTU(1100))
 	if err != nil {
 		log.Fatalf("[DTLS] %v", err)
 	}
@@ -1296,9 +1919,10 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 		return
 	}
 
-	hctx, hcancel := context.WithTimeout(ctx, 30*time.Second)
+	hctx, hcancel := context.WithTimeout(ctx, 60*time.Second)
 	if err := dtlsConn.HandshakeContext(hctx); err != nil {
 		hcancel()
+		log.Printf("[DTLS] [ERR] Handshake failed from %s: %v", clientConn.RemoteAddr().String(), err)
 		return
 	}
 	hcancel()
@@ -1340,21 +1964,23 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 		valid := isMainPass || (isGenPass && !isPasswordExpired(entry))
 
 		// Для сгенерированных паролей — проверяем привязку к устройству
-		if valid && isGenPass && entry.DeviceID != "" && entry.DeviceID != deviceID {
-			// Пароль уже привязан к другому устройству
+		if valid && isGenPass && entry.IsDeactivated {
+			clientConn.Write([]byte("DENIED:deactivated"))
+			log.Printf("[WG] Отказ: пароль %s деактивирован, запрос от %s", maskPassword(password), deviceID)
+			dbMutex.Unlock()
+		} else if valid && isGenPass && !entry.canConnectAndBind(deviceID) {
+			// Достигнут лимит устройств или привязано к другому устройству
 			clientConn.Write([]byte("DENIED:device_mismatch"))
-			log.Printf("[WG] Отказ: пароль %s привязан к %s, запрос от %s", maskPassword(password), entry.DeviceID, deviceID)
+			log.Printf("[WG] Отказ: пароль %s достиг лимита устройств (%d), запрос от %s", maskPassword(password), entry.MaxDevices, deviceID)
 			dbMutex.Unlock()
 		} else if valid {
 			connDeviceID = deviceID
 			connPassword = password
 			connIsMainPass = isMainPass
 
-			// Привязываем пароль к устройству при первом использовании
-			if isGenPass && entry.DeviceID == "" {
-				entry.DeviceID = deviceID
+			// Сохраняем БД, так как canConnectAndBind мог внести привязку нового устройства
+			if isGenPass {
 				saveDB()
-				log.Printf("[WG] Пароль %s привязан к устройству %s", maskPassword(password), deviceID)
 			}
 
 			dev, exists := db.Devices[deviceID]
@@ -1486,6 +2112,11 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 					return
 				}
 				e.UpBytes += int64(nn)
+				if connDeviceID != "" {
+					if dev, exists := db.Devices[connDeviceID]; exists && dev != nil {
+						dev.UpBytes += int64(nn)
+					}
+				}
 				dbMutex.Unlock()
 			}
 			if _, err := wgConn.Write((*b)[:nn]); err != nil {
@@ -1529,6 +2160,11 @@ func handleConn(ctx context.Context, clientConn net.Conn, wgEndpoint string, wgD
 					return
 				}
 				e.DownBytes += int64(nn)
+				if connDeviceID != "" {
+					if dev, exists := db.Devices[connDeviceID]; exists && dev != nil {
+						dev.DownBytes += int64(nn)
+					}
+				}
 				dbMutex.Unlock()
 			}
 			if _, err := clientConn.Write((*b)[:nn]); err != nil {
@@ -1552,11 +2188,29 @@ type ObfsConfig struct {
 	PayloadType uint8
 	PaddingMax  int
 }
+var aeadCache sync.Map
+
+func getAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != wrapKeyLen {
+		return nil, fmt.Errorf("obfs: key must be %d bytes", wrapKeyLen)
+	}
+	keyStr := string(key)
+	if val, ok := aeadCache.Load(keyStr); ok {
+		return val.(cipher.AEAD), nil
+	}
+	aead, err := chacha20poly1305.New(key)
+	if err != nil {
+		return nil, err
+	}
+	aeadCache.Store(keyStr, aead)
+	return aead, nil
+}
 
 type ObfsState struct {
-	mu  sync.Mutex
-	seq uint16
-	ts  uint32
+	mu      sync.Mutex
+	initSeq uint16
+	initTs  uint32
+	count   uint64
 }
 
 func NewObfsConfig() *ObfsConfig {
@@ -1573,8 +2227,9 @@ func NewObfsState() *ObfsState {
 	var buf [6]byte
 	rand.Read(buf[:])
 	return &ObfsState{
-		seq: binary.BigEndian.Uint16(buf[0:2]),
-		ts:  binary.BigEndian.Uint32(buf[2:6]),
+		initSeq: binary.BigEndian.Uint16(buf[0:2]),
+		initTs:  binary.BigEndian.Uint32(buf[2:6]),
+		count:   0,
 	}
 }
 
@@ -1594,11 +2249,12 @@ func obfsWrapPacket(key, payload []byte, cfg *ObfsConfig, state *ObfsState) ([]b
 		return nil, errors.New("obfs: empty payload")
 	}
 	state.mu.Lock()
-	seq := state.seq
-	ts := state.ts
-	state.seq++
-	state.ts += 960
+	c := state.count
+	state.count++
 	state.mu.Unlock()
+
+	seq := state.initSeq + uint16(c)
+	ts := state.initTs + uint32(c)*960 + uint32(c>>16)
 
 	nonce := obfsBuildNonce(cfg.SSRC, seq, ts)
 	padRand := 0
@@ -1617,7 +2273,7 @@ func obfsWrapPacket(key, payload []byte, cfg *ObfsConfig, state *ObfsState) ([]b
 	binary.BigEndian.PutUint32(out[4:8], ts)
 	binary.BigEndian.PutUint32(out[8:12], cfg.SSRC)
 
-	aead, err := chacha20poly1305.New(key)
+	aead, err := getAEAD(key)
 	if err != nil {
 		return nil, fmt.Errorf("obfs: cipher init: %w", err)
 	}
@@ -1660,7 +2316,7 @@ func obfsUnwrapPacket(key, wire, dst []byte) (int, error) {
 		return 0, errors.New("obfs: dst buffer too small")
 	}
 	nonce := obfsBuildNonce(ssrc, seq, ts)
-	aead, err := chacha20poly1305.New(key)
+	aead, err := getAEAD(key)
 	if err != nil {
 		return 0, fmt.Errorf("obfs: cipher init: %w", err)
 	}
@@ -1670,7 +2326,6 @@ func obfsUnwrapPacket(key, wire, dst []byte) (int, error) {
 	}
 	return len(plain), nil
 }
-
 func obfsIsRTPPacket(wire []byte) bool {
 	if len(wire) < 13 {
 		return false

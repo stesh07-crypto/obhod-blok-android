@@ -19,7 +19,20 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import com.wdtt.client.DownloadState
+import com.wdtt.client.downloadUpdate
+import com.wdtt.client.installApk
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -38,10 +51,15 @@ fun AppUpdateDialog(
 ) {
     val isTagOnly = release.source == RemoteVersionSource.Tag
     val title = if (isTagOnly) "Найден новый tag" else "Доступно обновление"
+    
+    var downloadState by remember { mutableStateOf<DownloadState>(DownloadState.Idle) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    
     val description = if (isTagOnly) {
         "На GitHub обнаружен более новый tag ${release.versionTag}. Похоже, опубликованный release ещё не догнал его."
     } else {
-        "Вышла новая версия приложения ${release.versionTag}. Можно открыть страницу релиза и обновиться вручную."
+        "Вышла новая версия приложения ${release.versionTag}. Можно скачать и установить обновление автоматически."
     }
 
     Dialog(
@@ -98,28 +116,74 @@ fun AppUpdateDialog(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onPostpone,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(50.dp),
-                        shape = RoundedCornerShape(22.dp)
-                    ) {
-                        Text("Позже", fontWeight = FontWeight.SemiBold)
+                when (val state = downloadState) {
+                    is DownloadState.Idle, is DownloadState.Error -> {
+                        if (state is DownloadState.Error) {
+                            Text("Ошибка загрузки: ${state.message}", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onPostpone,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(22.dp)
+                            ) {
+                                Text("Позже", fontWeight = FontWeight.SemiBold)
+                            }
+        
+                            Button(
+                                onClick = {
+                                    if (release.downloadUrl != null && !isTagOnly) {
+                                        scope.launch {
+                                            withContext(Dispatchers.IO) {
+                                                downloadUpdate(context, release.downloadUrl, release.versionTag).collect { newState ->
+                                                    withContext(Dispatchers.Main) {
+                                                        downloadState = newState
+                                                        if (newState is DownloadState.Finished) {
+                                                            installApk(context, newState.file)
+                                                            onPostpone() // Close dialog
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        onUpdate() // Fallback to browser
+                                    }
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(50.dp),
+                                shape = RoundedCornerShape(22.dp)
+                            ) {
+                                Text(if (release.downloadUrl != null && !isTagOnly) "Скачать" else "В браузере", fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
-
-                    Button(
-                        onClick = onUpdate,
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(50.dp),
-                        shape = RoundedCornerShape(22.dp)
-                    ) {
-                        Text("Обновить", fontWeight = FontWeight.Bold)
+                    is DownloadState.Downloading -> {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { state.progress },
+                                modifier = Modifier.fillMaxWidth().height(8.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                            Text(
+                                text = "Скачивание... ${(state.progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    is DownloadState.Finished -> {
+                        Text("Готово! Запуск установки...", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }

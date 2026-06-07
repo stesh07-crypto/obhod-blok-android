@@ -38,7 +38,8 @@ import androidx.compose.runtime.Stable
 data class AppItem(
     val name: String,
     val packageName: String,
-    val icon: ImageBitmap?
+    val icon: ImageBitmap?,
+    val isSystem: Boolean = false
 )
 
 object AppCache {
@@ -60,6 +61,7 @@ fun ExceptionsTab() {
     var appsList by remember { mutableStateOf<List<AppItem>>(AppCache.cachedList ?: emptyList()) }
     var isLoading by remember { mutableStateOf(AppCache.cachedList == null) }
     var searchQuery by remember { mutableStateOf("") }
+    var showSystemApps by remember { mutableStateOf(false) }
 
     val isWhitelist by settingsStore.isWhitelist.collectAsStateWithLifecycle(initialValue = false)
 
@@ -76,10 +78,24 @@ fun ExceptionsTab() {
                 if (app.packageName != context.packageName &&
                     !app.packageName.contains("vkontakte") &&
                     !app.packageName.contains("vk.calls")) {
+                    val isSystem = (app.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                    val drawable = app.loadIcon(pm)
+                    val iconBitmap = if (drawable != null) {
+                        val w = if (drawable.intrinsicWidth > 0) drawable.intrinsicWidth else 128
+                        val h = if (drawable.intrinsicHeight > 0) drawable.intrinsicHeight else 128
+                        try {
+                            drawable.toBitmap(w, h).asImageBitmap()
+                        } catch (e: Exception) {
+                            null
+                        }
+                    } else {
+                        null
+                    }
                     list.add(AppItem(
                         name = app.loadLabel(pm).toString(),
                         packageName = app.packageName,
-                        icon = app.loadIcon(pm)?.toBitmap()?.asImageBitmap()
+                        icon = iconBitmap,
+                        isSystem = isSystem
                     ))
                 }
             }
@@ -91,8 +107,9 @@ fun ExceptionsTab() {
 
     val filteredApps by remember {
         derivedStateOf {
-            if (searchQuery.isBlank()) appsList
-            else appsList.filter {
+            val baseList = if (showSystemApps) appsList else appsList.filter { !it.isSystem }
+            if (searchQuery.isBlank()) baseList
+            else baseList.filter {
                 it.name.contains(searchQuery, ignoreCase = true) ||
                 it.packageName.contains(searchQuery, ignoreCase = true)
             }
@@ -119,7 +136,45 @@ fun ExceptionsTab() {
             singleLine = true,
         )
 
-        Spacer(modifier = Modifier.height(14.dp))
+        Spacer(modifier = Modifier.height(8.dp))
+
+        AppSectionCard(
+            modifier = Modifier.padding(bottom = 8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                    Text(
+                        "Системные приложения",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        "Отображать встроенные приложения в списке",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        lineHeight = 14.sp
+                    )
+                }
+                Switch(
+                    checked = showSystemApps,
+                    onCheckedChange = { showSystemApps = it },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.onPrimary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primary,
+                        uncheckedThumbColor = MaterialTheme.colorScheme.outline,
+                        uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
+                    )
+                )
+            }
+        }
 
         // Mode Toggle
         AppSectionCard(

@@ -1,6 +1,7 @@
 package com.wdtt.client
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -106,7 +107,10 @@ class MainActivity : ComponentActivity() {
             get() = activeActivities > 0
             set(value) {}
 
-        // URI файла .qwdtt/.netrkn, ожидающего импорта
+        // Статическая ссылка на текущую Activity
+        var currentActivity: MainActivity? = null
+
+        // URI файла .qwdtt, ожидающего импорта
         val pendingFileUri = mutableStateOf<android.net.Uri?>(null)
     }
 
@@ -128,12 +132,16 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         activeActivities++
+        currentActivity = this
         ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
     }
 
     override fun onStop() {
         super.onStop()
         activeActivities--
+        if (currentActivity == this) {
+            currentActivity = null
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -242,6 +250,8 @@ fun MainScreen(
 ) {
     val unreadErrors by TunnelManager.unreadErrorCount.collectAsStateWithLifecycle()
     val tunnelRunning by TunnelManager.running.collectAsStateWithLifecycle()
+    val showBlockerWarning by TunnelManager.showBlockerWarning.collectAsStateWithLifecycle()
+    val hasSeenWelcomeDialog by settingsStore.hasSeenWelcomeDialog.collectAsStateWithLifecycle(initialValue = true)
     val view = LocalView.current
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -259,6 +269,13 @@ fun MainScreen(
 
     LaunchedEffect(selectedTab) {
         if (selectedTab == 4) TunnelManager.clearUnreadErrors()
+    }
+
+    val pendingFileUri = MainActivity.pendingFileUri.value
+    LaunchedEffect(pendingFileUri) {
+        if (pendingFileUri != null) {
+            selectedTab = 2
+        }
     }
 
     LaunchedEffect(updateCheckIntervalHours) {
@@ -415,6 +432,100 @@ fun MainScreen(
 
     }
 
+    if (!hasSeenWelcomeDialog) {
+        AlertDialog(
+            onDismissRequest = { 
+                scope.launch { settingsStore.saveHasSeenWelcomeDialog(true) }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        "Готовые профили",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Вы можете получить готовые конфиги напрямую в этих Telegram-ботах:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/darkbitVPN_bot"))
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp)
+                        ) {
+                            Text("🤖 @darkbitVPN", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                        
+                        Button(
+                            onClick = {
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/sidylinkbot"))
+                                context.startActivity(intent)
+                            },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                            ),
+                            shape = RoundedCornerShape(12.dp),
+                            contentPadding = PaddingValues(vertical = 10.dp)
+                        ) {
+                            Text("🤖 @sidylinkbot", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Следите за обновлениями",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Все дальнейшие обновления и новости мы будем публиковать в нашем канале:",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Button(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbitVPN"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        contentPadding = PaddingValues(vertical = 10.dp)
+                    ) {
+                        Text("📢 @darkbitVPN", style = MaterialTheme.typography.labelLarge)
+                    }
+                    Text(
+                        "Просто скопируйте текст профиля или конфигурационный файл и импортируйте его на вкладке «Профили». Эта памятка также доступна в настройках.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { scope.launch { settingsStore.saveHasSeenWelcomeDialog(true) } }
+                ) {
+                    Text("Понятно")
+                }
+            }
+        )
+    }
+
     pendingRelease?.let { release ->
         AppUpdateDialog(
             release = release,
@@ -447,8 +558,57 @@ fun MainScreen(
             }
         )
     }
+
+    if (showBlockerWarning) {
+        var dontShowAgain by rememberSaveable { mutableStateOf(false) }
+        AlertDialog(
+            onDismissRequest = { TunnelManager.showBlockerWarning.value = false },
+            title = { Text("Внимание", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text("Не используйте приложение, если белые списки не включены, так как это негативно влияет на способ обхода.")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { dontShowAgain = !dontShowAgain }
+                    ) {
+                        Checkbox(
+                            checked = dontShowAgain,
+                            onCheckedChange = { dontShowAgain = it }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Больше не показывать", style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { 
+                        TunnelManager.showBlockerWarning.value = false
+                        scope.launch {
+                            settingsStore.saveHideBlockerWarning(dontShowAgain)
+                        }
+                        context.startService(Intent(context, TunnelService::class.java).apply {
+                            action = "START_FORCED"
+                        })
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Всё равно подключиться", color = MaterialTheme.colorScheme.onError)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { TunnelManager.showBlockerWarning.value = false }) {
+                    Text("Отмена")
+                }
+            },
+            shape = RoundedCornerShape(24.dp)
+        )
+    }
 }
 
+@SuppressLint("UnusedBoxWithConstraintsScope")
 @Composable
 private fun ProxyNavigationBar(
     navItems: List<NavItem>,

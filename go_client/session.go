@@ -67,6 +67,10 @@ func RunSession(
 	stats *Stats,
 ) (bool, error) {
 	configDelivered := false
+	var firstWrapUp uint32
+	var firstWrapDown uint32
+	var firstDtlsWrite uint32
+	var firstDtlsRead uint32
 
 	if len(creds.TurnURLs) == 0 {
 		return false, fmt.Errorf("нет TURN URL в учетных данных")
@@ -215,6 +219,9 @@ func RunSession(
 				}
 				payload = plain[:m]
 			}
+			if atomic.CompareAndSwapUint32(&firstWrapUp, 0, 1) {
+				log.Printf("[СЕССИЯ #%d] [ДЕБАГ] Успешно расшифрован/получен ПЕРВЫЙ пакет от TURN Relay (%d байт)", sessionID, len(payload))
+			}
 			if _, writeErr := pipeA.WriteTo(payload, peer); writeErr != nil {
 				return
 			}
@@ -242,6 +249,9 @@ func RunSession(
 					out = wrapped
 				}
 			}
+			if atomic.CompareAndSwapUint32(&firstWrapDown, 0, 1) {
+				log.Printf("[СЕССИЯ #%d] [ДЕБАГ] Успешно зашифрован/отправлен ПЕРВЫЙ пакет на TURN Relay (%d байт)", sessionID, len(out))
+			}
 			if _, writeErr := relay.WriteTo(out, peer); writeErr != nil {
 				return
 			}
@@ -267,6 +277,7 @@ func RunSession(
 		ExtendedMasterSecret:  dtls.RequireExtendedMasterSecret,
 		CipherSuites:          []dtls.CipherSuiteID{dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256},
 		ConnectionIDGenerator: dtls.OnlySendCIDGenerator(),
+		MTU:                   1100,
 		// No ServerName (SNI) — less detectable by DPI
 	}
 
@@ -277,7 +288,7 @@ func RunSession(
 	}
 	defer dtlsConn.Close()
 
-	hctx, hcancel := context.WithTimeout(sessCtx, 20*time.Second)
+	hctx, hcancel := context.WithTimeout(sessCtx, 50*time.Second)
 	log.Printf("[ВОРКЕР #%d] [DTLS] Рукопожатие (Handshake)...", sessionID)
 	err = dtlsConn.HandshakeContext(hctx)
 	hcancel()
@@ -371,7 +382,12 @@ func RunSession(
 					return
 				}
 				_ = dtlsConn.SetWriteDeadline(time.Now().Add(sessionReadTimeout))
-				if _, writeErr := dtlsConn.Write(pkt); writeErr != nil {
+				if atomic.CompareAndSwapUint32(&firstDtlsWrite, 0, 1) {
+					log.Printf("[ВОРКЕР #%d] [ДЕБАГ] Отправлен ПЕРВЫЙ пакет в DTLS-соединение (%d байт)", sessionID, len(pkt))
+				}
+				_, writeErr := dtlsConn.Write(pkt)
+				putPktBuf(pkt)
+				if writeErr != nil {
 					log.Printf("[ВОРКЕР #%d] Ошибка Writer: %v", sessionID, writeErr)
 					return
 				}
@@ -403,11 +419,16 @@ func RunSession(
 				continue
 			}
 
-			pkt := make([]byte, n)
+			if atomic.CompareAndSwapUint32(&firstDtlsRead, 0, 1) {
+				log.Printf("[ВОРКЕР #%d] [ДЕБАГ] Получен ПЕРВЫЙ пакет из DTLS-соединения (%d байт)", sessionID, n)
+			}
+
+			pkt := getPktBuf(n)
 			copy(pkt, b[:n])
 			select {
 			case d.ReturnCh <- pkt:
 			case <-sessCtx.Done():
+				putPktBuf(pkt)
 				return
 			}
 		}

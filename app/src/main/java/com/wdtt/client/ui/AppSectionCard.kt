@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 
 @Composable
 private fun appSectionCardColor(): Color {
@@ -44,15 +45,19 @@ fun AppSectionCard(
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(horizontal = 18.dp, vertical = 18.dp),
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(16.dp),
+    border: BorderStroke? = null,
+    color: Color? = null,
+    shadowElevation: Dp? = null,
+    tonalElevation: Dp? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Surface(
         shape = RoundedCornerShape(28.dp),
-        color = appSectionCardColor(),
+        color = color ?: appSectionCardColor(),
         contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(1.dp, appSectionCardBorderColor()),
-        shadowElevation = if (MaterialTheme.colorScheme.background.luminance() < 0.22f) 2.dp else 10.dp,
-        tonalElevation = if (MaterialTheme.colorScheme.background.luminance() < 0.22f) 0.dp else 2.dp,
+        border = border ?: BorderStroke(1.dp, appSectionCardBorderColor()),
+        shadowElevation = shadowElevation ?: if (MaterialTheme.colorScheme.background.luminance() < 0.22f) 2.dp else 10.dp,
+        tonalElevation = tonalElevation ?: if (MaterialTheme.colorScheme.background.luminance() < 0.22f) 0.dp else 2.dp,
         modifier = modifier.fillMaxWidth()
     ) {
         Column(

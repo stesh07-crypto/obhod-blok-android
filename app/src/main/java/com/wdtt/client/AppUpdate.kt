@@ -7,6 +7,15 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.io.File
+import java.io.FileOutputStream
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.currentCoroutineContext
+import android.content.Context
+import android.content.Intent
+import androidx.core.content.FileProvider
 
 const val UPDATE_CHECK_NEVER = -1
 const val DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 12
@@ -34,7 +43,8 @@ fun updateIntervalHoursToMillis(hours: Int): Long? = when {
 data class AppReleaseInfo(
     val versionTag: String,
     val releaseUrl: String,
-    val source: RemoteVersionSource
+    val source: RemoteVersionSource,
+    val downloadUrl: String? = null
 )
 
 enum class RemoteVersionSource {
@@ -109,7 +119,8 @@ private fun fetchLatestTagFromList(): AppReleaseInfo? {
         val tag = AppReleaseInfo(
             versionTag = tagName,
             releaseUrl = "$GITHUB_TAG_TREE_URL_PREFIX$tagName",
-            source = RemoteVersionSource.Tag
+            source = RemoteVersionSource.Tag,
+            downloadUrl = null
         )
         if (bestTag == null || isNewerVersion(bestTag.versionTag, tag.versionTag)) {
             bestTag = tag
@@ -147,7 +158,7 @@ private fun fetchReleaseFromLatestWebRedirect(): AppReleaseInfo? {
             val releaseUrl = URL(URL(GITHUB_LATEST_RELEASE_WEB_URL), location).toString()
             val versionTag = extractTagFromReleaseUrl(releaseUrl)
             if (!versionTag.isNullOrBlank()) {
-                return AppReleaseInfo(versionTag, releaseUrl, RemoteVersionSource.Release)
+                return AppReleaseInfo(versionTag, releaseUrl, RemoteVersionSource.Release, null)
             }
         }
 
@@ -155,7 +166,7 @@ private fun fetchReleaseFromLatestWebRedirect(): AppReleaseInfo? {
             val response = conn.inputStream.bufferedReader().use { it.readText() }
             val versionTag = Regex("/releases/tag/([^\"?#<]+)").find(response)?.groupValues?.getOrNull(1)
             if (!versionTag.isNullOrBlank()) {
-                return AppReleaseInfo(versionTag, "$GITHUB_RELEASE_TAG_URL_PREFIX$versionTag", RemoteVersionSource.Release)
+                return AppReleaseInfo(versionTag, "$GITHUB_RELEASE_TAG_URL_PREFIX$versionTag", RemoteVersionSource.Release, null)
             }
         }
 
@@ -249,7 +260,20 @@ private fun JSONObject.toAppReleaseInfo(): AppReleaseInfo? {
     val versionTag = normalizeVersionTag(optString("tag_name"))
     val releaseUrl = optString("html_url").trim()
     if (versionTag.isBlank() || releaseUrl.isBlank()) return null
-    return AppReleaseInfo(versionTag, releaseUrl, RemoteVersionSource.Release)
+    
+    var downloadUrl: String? = null
+    val assets = optJSONArray("assets")
+    if (assets != null) {
+        for (i in 0 until assets.length()) {
+            val asset = assets.optJSONObject(i) ?: continue
+            if (asset.optString("name").endsWith(".apk", ignoreCase = true)) {
+                downloadUrl = asset.optString("browser_download_url")
+                break
+            }
+        }
+    }
+    
+    return AppReleaseInfo(versionTag, releaseUrl, RemoteVersionSource.Release, downloadUrl)
 }
 
 private fun versionParts(version: String): List<Int> {
@@ -273,4 +297,86 @@ private fun extractTagFromReleaseUrl(releaseUrl: String): String? {
         .substringBefore("/")
         .takeIf { it.isNotBlank() }
         ?.let(::normalizeVersionTag)
+}
+
+sealed class DownloadState {
+    object Idle : DownloadState()
+    data class Downloading(val progress: Float) : DownloadState()
+    data class Finished(val file: File) : DownloadState()
+    data class Error(val message: String) : DownloadState()
+}
+
+fun downloadUpdate(context: Context, downloadUrl: String, versionTag: String): Flow<DownloadState> = flow {
+    emit(DownloadState.Downloading(0f))
+    var conn: HttpURLConnection? = null
+    try {
+        val updatesDir = File(context.cacheDir, "updates")
+        if (!updatesDir.exists()) updatesDir.mkdirs()
+        
+        // Clean up old updates
+        updatesDir.listFiles()?.forEach { it.delete() }
+        
+        val apkFile = File(updatesDir, "qWDTT_$versionTag.apk")
+        
+        conn = URL(downloadUrl).openConnection() as HttpURLConnection
+        conn.requestMethod = "GET"
+        conn.connectTimeout = 15_000
+        conn.readTimeout = 15_000
+        conn.setRequestProperty("User-Agent", "qWDTTAndroid/${BuildConfig.VERSION_NAME}")
+        conn.instanceFollowRedirects = true
+        
+        val responseCode = conn.responseCode
+        if (responseCode !in 200..299) {
+            emit(DownloadState.Error("HTTP $responseCode"))
+            return@flow
+        }
+        
+        val totalBytes = conn.contentLength.toLong()
+        val inputStream = conn.inputStream
+        val outputStream = FileOutputStream(apkFile)
+        
+        val buffer = ByteArray(8192)
+        var bytesRead: Int
+        var downloadedBytes = 0L
+        var lastEmitTime = 0L
+        
+        inputStream.use { input ->
+            outputStream.use { output ->
+                while (input.read(buffer).also { bytesRead = it } != -1) {
+                    if (!currentCoroutineContext().isActive) {
+                        apkFile.delete()
+                        emit(DownloadState.Error("Cancelled"))
+                        return@flow
+                    }
+                    output.write(buffer, 0, bytesRead)
+                    downloadedBytes += bytesRead
+                    
+                    val now = System.currentTimeMillis()
+                    if (totalBytes > 0 && now - lastEmitTime > 100) {
+                        lastEmitTime = now
+                        emit(DownloadState.Downloading(downloadedBytes.toFloat() / totalBytes.toFloat()))
+                    }
+                }
+            }
+        }
+        
+        emit(DownloadState.Finished(apkFile))
+    } catch (e: Exception) {
+        emit(DownloadState.Error(e.message ?: "Unknown error"))
+    } finally {
+        conn?.disconnect()
+    }
+}
+
+fun installApk(context: Context, apkFile: File) {
+    try {
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apkFile)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION
+        }
+        context.startActivity(intent)
+    } catch (e: Exception) {
+        Log.e(UPDATE_LOG_TAG, "Failed to install APK", e)
+    }
 }

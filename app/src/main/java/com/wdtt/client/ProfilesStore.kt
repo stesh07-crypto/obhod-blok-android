@@ -23,7 +23,13 @@ data class ConnectionProfile(
     val workersPerHash: Int,
     val listenPort: Int,
     val password: String,
-    val trafficMb: Double = 0.0
+    val trafficMb: Double = 0.0,
+    val groupId: String = ""
+)
+
+data class ProfileGroup(
+    val id: String,
+    val name: String
 )
 
 class ProfilesStore(context: Context) {
@@ -42,6 +48,11 @@ class ProfilesStore(context: Context) {
         private fun portKey(id: String) = intPreferencesKey("profile_port_$id")
         private fun passKey(id: String) = stringPreferencesKey("profile_pass_enc_$id")
         private fun trafficKey(id: String) = androidx.datastore.preferences.core.doublePreferencesKey("profile_traffic_$id")
+        private fun groupIdKey(id: String) = stringPreferencesKey("profile_group_id_$id")
+
+        private const val GROUPS_IDS_KEY = "groups_ids"
+        private fun groupsIdsKey() = stringPreferencesKey(GROUPS_IDS_KEY)
+        private fun groupNameKey(id: String) = stringPreferencesKey("group_name_$id")
     }
 
     private val dataStore = appContext.dataStore
@@ -63,7 +74,22 @@ class ProfilesStore(context: Context) {
                 val enc = prefs[passKey(id)] ?: ""
                 val pass = secureStore.decrypt(enc) ?: ""
                 val traffic = prefs[trafficKey(id)] ?: 0.0
-                list.add(ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic))
+                val groupId = prefs[groupIdKey(id)] ?: ""
+                list.add(ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic, groupId))
+            }
+            list
+        }
+
+    val groups: Flow<List<ProfileGroup>> = dataStore.data
+        .catch { emit(emptyPreferences()) }
+        .map { prefs ->
+            val idsRaw = prefs[groupsIdsKey()] ?: ""
+            if (idsRaw.isBlank()) return@map emptyList()
+            val ids = idsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+            val list = mutableListOf<ProfileGroup>()
+            for (id in ids) {
+                val name = prefs[groupNameKey(id)] ?: ""
+                list.add(ProfileGroup(id, name))
             }
             list
         }
@@ -82,6 +108,17 @@ class ProfilesStore(context: Context) {
             prefs[portKey(profile.id)] = profile.listenPort
             prefs[passKey(profile.id)] = secureStore.encrypt(profile.password)
             prefs[trafficKey(profile.id)] = profile.trafficMb
+            prefs[groupIdKey(profile.id)] = profile.groupId
+        }
+    }
+
+    suspend fun saveGroup(group: ProfileGroup) = withContext(Dispatchers.IO) {
+        dataStore.edit { prefs ->
+            val idsRaw = prefs[groupsIdsKey()] ?: ""
+            val ids = idsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            if (!ids.contains(group.id)) ids.add(group.id)
+            prefs[groupsIdsKey()] = ids.joinToString(",")
+            prefs[groupNameKey(group.id)] = group.name
         }
     }
 
@@ -98,12 +135,23 @@ class ProfilesStore(context: Context) {
             prefs.remove(portKey(id))
             prefs.remove(passKey(id))
             prefs.remove(trafficKey(id))
+            prefs.remove(groupIdKey(id))
         }
     }
 
-    suspend fun createProfile(name: String, peer: String, vkHashes: String, workers: Int, listenPort: Int, password: String): ConnectionProfile {
+    suspend fun deleteGroup(id: String) = withContext(Dispatchers.IO) {
+        dataStore.edit { prefs ->
+            val idsRaw = prefs[groupsIdsKey()] ?: ""
+            val ids = idsRaw.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            ids.remove(id)
+            prefs[groupsIdsKey()] = ids.joinToString(",")
+            prefs.remove(groupNameKey(id))
+        }
+    }
+
+    suspend fun createProfile(name: String, peer: String, vkHashes: String, workers: Int, listenPort: Int, password: String, groupId: String = ""): ConnectionProfile {
         val id = UUID.randomUUID().toString()
-        val p = ConnectionProfile(id, name, peer, vkHashes, workers, listenPort, password)
+        val p = ConnectionProfile(id, name, peer, vkHashes, workers, listenPort, password, 0.0, groupId)
         saveProfile(p)
         return p
     }
@@ -118,7 +166,8 @@ class ProfilesStore(context: Context) {
         val enc = prefs[passKey(id)] ?: ""
         val pass = secureStore.decrypt(enc) ?: ""
         val traffic = prefs[trafficKey(id)] ?: 0.0
-        return ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic)
+        val groupId = prefs[groupIdKey(id)] ?: ""
+        return ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic, groupId)
     }
 
     suspend fun incrementProfileTraffic(id: String, additionalTrafficMb: Double) = withContext(Dispatchers.IO) {
@@ -133,6 +182,23 @@ class ProfilesStore(context: Context) {
     suspend fun resetProfileTraffic(id: String) = withContext(Dispatchers.IO) {
         dataStore.edit { prefs ->
             prefs[trafficKey(id)] = 0.0
+        }
+    }
+
+    suspend fun reorderProfiles(newOrderForSubset: List<String>) = withContext(Dispatchers.IO) {
+        dataStore.edit { prefs ->
+            val actualIdsRaw = prefs[stringPreferencesKey("profiles_ids")] ?: ""
+            val actualIds = actualIdsRaw.split(",").map { it.trim() }.filter { it.isNotEmpty() }.toMutableList()
+            
+            val subsetIndices = actualIds.mapIndexedNotNull { index, id -> if (newOrderForSubset.contains(id)) index else null }.sorted()
+            if (subsetIndices.size == newOrderForSubset.size) {
+                for (i in subsetIndices.indices) {
+                    actualIds[subsetIndices[i]] = newOrderForSubset[i]
+                }
+                prefs[stringPreferencesKey("profiles_ids")] = actualIds.joinToString(",")
+            } else if (actualIds.isEmpty() || newOrderForSubset.containsAll(actualIds)) {
+                prefs[stringPreferencesKey("profiles_ids")] = newOrderForSubset.joinToString(",")
+            }
         }
     }
 

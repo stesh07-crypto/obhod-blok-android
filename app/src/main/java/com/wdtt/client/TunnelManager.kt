@@ -13,6 +13,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import java.io.File
 import kotlin.math.min
 import kotlin.math.pow
@@ -67,6 +69,20 @@ object TunnelManager {
     
     val cooldownSeconds = MutableStateFlow(0)
     private var cooldownJob: Job? = null
+    val showBlockerWarning = MutableStateFlow(false)
+
+    fun startForced() {
+        android.util.Log.d("WDTT", "startForced() called")
+        showBlockerWarning.value = false
+        val ctx = lastContext?.get()
+        val params = currentParams
+        android.util.Log.d("WDTT", "startForced: ctx=$ctx, params=$params")
+        if (ctx != null && params != null) {
+            start(ctx, params, isSwitching = false, forceStart = true)
+        } else {
+            android.util.Log.e("WDTT", "startForced failed: ctx or params is null")
+        }
+    }
 
     fun clearUnreadErrors() {
         unreadErrorCount.value = 0
@@ -112,7 +128,8 @@ object TunnelManager {
         }
     }
 
-    fun start(context: Context, params: TunnelParams, isSwitching: Boolean = false) {
+    fun start(context: Context, params: TunnelParams, isSwitching: Boolean = false, forceStart: Boolean = false) {
+        android.util.Log.d("WDTT", "TunnelManager.start() called. isSwitching=$isSwitching, forceStart=$forceStart, running=${running.value}")
         if (running.value && !isSwitching) return
         
         val appContext = context.applicationContext // Защита от Memory Leak
@@ -148,6 +165,23 @@ object TunnelManager {
                         activeProfileId = SettingsStore(appContext).currentProfileId.first()
                     } catch (_: Exception) {
                         activeProfileId = ""
+                    }
+                    
+                    if (!forceStart) {
+                        try {
+                            if (!isNetworkBlocked()) {
+                                val hideWarning = SettingsStore(appContext).hideBlockerWarning.first()
+                                if (!hideWarning) {
+                                    updateLog("bs_check_fail", "❌ Подключение отклонено: БС не включены", 99, true)
+                                    running.value = false
+                                    showBlockerWarning.value = true
+                                    android.util.Log.d("WDTT", "Network blocked, returning.")
+                                    return@launch
+                                }
+                            }
+                        } catch (e: Exception) {
+                            android.util.Log.e("WDTT", "Error during block check: ${e.message}")
+                        }
                     }
                 }
                 val targetHash = if (activeHashIndex == 0) params.vkHashes else params.secondaryVkHash
@@ -557,6 +591,33 @@ object TunnelManager {
                 process = null
             }
         }
+    }
+
+    private suspend fun isNetworkBlocked(): Boolean = withContext(Dispatchers.IO) {
+        val hosts = listOf(
+            "google.com" to 443,
+            "amazon.com" to 443,
+            "apple.com" to 443,
+            "microsoft.com" to 443
+        )
+        
+        val deferreds = hosts.map { (host, port) ->
+            async {
+                try {
+                    java.net.Socket().use { socket ->
+                        socket.connect(java.net.InetSocketAddress(host, port), 4000) // 4 сек таймаут
+                        true
+                    }
+                } catch (e: Exception) {
+                    false
+                }
+            }
+        }
+        
+        val results = deferreds.awaitAll()
+        val reachableCount = results.count { it }
+        
+        reachableCount == 0
     }
 
     private fun handleCriticalError(message: String) {

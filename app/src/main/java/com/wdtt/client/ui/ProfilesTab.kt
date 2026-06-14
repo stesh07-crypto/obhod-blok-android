@@ -1028,12 +1028,16 @@ fun ProfilesTab(
                 }
 
                 androidx.compose.material3.IconButton(
-                    onClick = { sortByPing = !sortByPing }
+                    onClick = { sortByPing = !sortByPing },
+                    modifier = Modifier.background(
+                        color = if (sortByPing) MaterialTheme.colorScheme.primaryContainer else androidx.compose.ui.graphics.Color.Transparent,
+                        shape = androidx.compose.foundation.shape.CircleShape
+                    )
                 ) {
                     androidx.compose.material3.Icon(
                         imageVector = Icons.Filled.Sort,
                         contentDescription = "Сортировать по пингу",
-                        tint = if (sortByPing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        tint = if (sortByPing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
 

@@ -40,7 +40,7 @@ class QuickToggleTileService : TileService() {
                 val captchaMethod = store.captchaSolveMethod.first()
                 val manualPortsEnabled = store.manualPortsEnabled.first()
                 val serverDtlsPort = if (manualPortsEnabled) store.serverDtlsPort.first() else 56000
-                val peerWithPort = if (basePeer.isBlank() || basePeer.contains(":")) basePeer else "$basePeer:$serverDtlsPort"
+                val peerWithPort = if (basePeer.isBlank()) basePeer else PeerAddress.ensurePort(basePeer, serverDtlsPort)
                 
                 if (peerWithPort.isNotBlank() && hashes.isNotBlank() && password.isNotBlank()) {
                     val startIntent = Intent(context, TunnelService::class.java).apply {

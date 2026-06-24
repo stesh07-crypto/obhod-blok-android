@@ -240,6 +240,10 @@ func fetchVkCredsSerialized(ctx context.Context, link string, streamID int) (str
 // ─── Main credential fetcher (rotates through stable credential sets) ───
 
 func fetchVkCreds(ctx context.Context, link string, streamID int) (string, string, []string, error) {
+	if getVkAuthMode() == "account" {
+		return fetchAccountVkCreds(ctx, link, streamID)
+	}
+
 	if time.Now().Unix() < globalCaptchaLockout.Load() {
 		return "", "", nil, fmt.Errorf("CAPTCHA_WAIT_REQUIRED: global lockout active")
 	}
@@ -477,9 +481,7 @@ func getTokenChain(ctx context.Context, link string, streamID int, creds VKCrede
 		if !ok {
 			continue
 		}
-		clean := strings.Split(urlStr, "?")[0]
-		address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
-		addresses = append(addresses, address)
+		addresses = append(addresses, turnURLsToAddresses([]string{urlStr})...)
 	}
 
 	if len(addresses) == 0 {
@@ -618,6 +620,22 @@ func requestWebViewCaptcha(streamID int, captchaErr *VkCaptchaError, mode string
 
 func isWebViewCaptchaTimeout(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "timed out")
+}
+
+func turnURLsToAddresses(urls []string) []string {
+	var addresses []string
+	for _, urlStr := range urls {
+		urlStr = strings.TrimSpace(urlStr)
+		if urlStr == "" {
+			continue
+		}
+		clean := strings.Split(urlStr, "?")[0]
+		address := strings.TrimPrefix(strings.TrimPrefix(clean, "turn:"), "turns:")
+		if address != "" {
+			addresses = append(addresses, address)
+		}
+	}
+	return addresses
 }
 
 // ─── GetCreds returns TURN credentials for a given stream ───

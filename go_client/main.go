@@ -105,6 +105,8 @@ func main() {
 				drainCaptchaResult()
 				CaptchaResultChan <- result
 				log.Printf("[КАПЧА] Результат от Kotlin записан в канал")
+			case strings.HasPrefix(line, "TURN_CREDS|"):
+				handleTurnCredsStdinLine(line)
 			}
 		}
 	}()
@@ -120,9 +122,17 @@ func main() {
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
 	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
+	vkAuthMode := flag.String("vk-auth", "account", "режим VK авторизации (account/anonymous)")
+	vkCredsFile := flag.String("vk-creds-file", "", "файл с TURN кредами от аккаунта VK")
 
 	flag.Parse()
 	activeCaptchaMode := setCaptchaMode(*captchaMode)
+	activeVkAuthMode := setVkAuthMode(*vkAuthMode)
+
+	if err := loadVkCredsFile(*vkCredsFile); err != nil {
+		log.Fatalf("[КЛИЕНТ] Ошибка чтения vk-creds-file: %v", err)
+	}
+	log.Printf("[КЛИЕНТ] VK auth mode: %s", activeVkAuthMode)
 
 	if *peerAddr == "" || *vkHash == "" {
 		log.Fatal("[КЛИЕНТ] Нужны -peer и -vk")
@@ -153,10 +163,21 @@ func main() {
 	if *numW > maxWorkers {
 		*numW = maxWorkers
 	}
-	if *numW < workersPerGroup {
-		*numW = workersPerGroup
+	if getVkAuthMode() == "account" {
+		const accountMaxWorkers = 4
+		if *numW > accountMaxWorkers {
+			log.Printf("[КЛИЕНТ] Аккаунт VK: TURN-квота ~%d relay на сессию, потоков %d -> %d", accountMaxWorkers, *numW, accountMaxWorkers)
+			*numW = accountMaxWorkers
+		}
+		if *numW < 1 {
+			*numW = 1
+		}
+	} else {
+		if *numW < workersPerGroup {
+			*numW = workersPerGroup
+		}
+		*numW = (*numW / workersPerGroup) * workersPerGroup
 	}
-	*numW = (*numW / workersPerGroup) * workersPerGroup
 
 	tp := &TurnParams{
 		Host:    *host,
@@ -204,7 +225,7 @@ func main() {
 		localPort = "9000"
 	}
 
-	numGroups := *numW / workersPerGroup
+	numGroups := (*numW + workersPerGroup - 1) / workersPerGroup
 
 	wrapStatus := "OFF"
 	if len(wrapKey) == wrapKeyLen {
@@ -299,7 +320,17 @@ func main() {
 			prevWaitReady = ch
 		}
 
-		ids := make([]int, workersPerGroup)
+		startIdx := g * workersPerGroup
+		endIdx := startIdx + workersPerGroup
+		if endIdx > *numW {
+			endIdx = *numW
+		}
+		groupSize := endIdx - startIdx
+		if groupSize <= 0 {
+			continue
+		}
+
+		ids := make([]int, groupSize)
 		for i := range ids {
 			ids[i] = workerIDCounter
 			workerIDCounter++

@@ -1,9 +1,10 @@
 package com.wdtt.client
 
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.TimeoutCancellationException
 import java.io.BufferedReader
@@ -39,7 +40,10 @@ object PingHelper {
             }
             android.util.Log.d("PingHelper", "Hash: ${firstHash.take(8)}... Peer: ${profile.peer}")
 
-            val peerWithPort = if (profile.peer.contains(":")) profile.peer else "${profile.peer}:56000"
+            val store = SettingsStore(context)
+            val manualPorts = store.manualPortsEnabled.first()
+            val defaultPort = if (manualPorts) store.serverDtlsPort.first() else 56000
+            val peerWithPort = PeerAddress.ensurePort(profile.peer, defaultPort)
 
             val cmd = mutableListOf(
                 binaryPath,

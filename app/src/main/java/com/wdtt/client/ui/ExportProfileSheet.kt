@@ -29,6 +29,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.wdtt.client.ConnectionProfile
+import com.wdtt.client.PeerAddress
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -38,15 +39,17 @@ import java.net.URLEncoder
 @Composable
 fun ExportProfileSheet(
     profile: ConnectionProfile,
+    serverDtlsPort: Int = 56000,
     onDismissRequest: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    val link = remember(profile) {
+    val link = remember(profile, serverDtlsPort) {
+        val exportPeer = PeerAddress.ensurePort(profile.peer, serverDtlsPort)
         val nameEsc = URLEncoder.encode(profile.name, "UTF-8")
-        val peerEsc = URLEncoder.encode(profile.peer, "UTF-8")
+        val peerEsc = URLEncoder.encode(exportPeer, "UTF-8")
         val hashesEsc = URLEncoder.encode(profile.vkHashes, "UTF-8")
         val passEsc = URLEncoder.encode(profile.password, "UTF-8")
         "qwdtt://config?name=$nameEsc&peer=$peerEsc&hashes=$hashesEsc&workers=${profile.workersPerHash}&port=${profile.listenPort}&pass=$passEsc"
@@ -69,7 +72,7 @@ fun ExportProfileSheet(
                 val json = """
                     {
                         "name": "${profile.name.replace("\"", "\\\"")}",
-                        "peer": "${profile.peer.replace("\"", "\\\"")}",
+                        "peer": "${PeerAddress.ensurePort(profile.peer, serverDtlsPort).replace("\"", "\\\"")}",
                         "vkHashes": "${profile.vkHashes.replace("\"", "\\\"")}",
                         "workersPerHash": ${profile.workersPerHash},
                         "listenPort": ${profile.listenPort},

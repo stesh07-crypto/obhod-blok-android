@@ -89,6 +89,17 @@
             android:windowSoftInputMode="adjustResize"
             android:exported="false" />
 
+        <activity
+            android:name=".VkAuthActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:exported="false" />
+
+        <receiver
+            android:name=".VkAuthCancelReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".CaptchaCancelReceiver"
             android:exported="false" />

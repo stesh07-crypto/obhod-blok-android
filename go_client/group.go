@@ -96,6 +96,9 @@ func WorkerGroup(
 		}
 
 		getStreamCache(credStreamID).invalidate(credStreamID)
+		if getVkAuthMode() == "account" {
+			invalidateInjectedTurnCreds(hash)
+		}
 		u, p, urls, refreshErr := GetCreds(ctx, hash, credStreamID)
 		if refreshErr != nil {
 			log.Printf("[TURN] Не удалось обновить креды после %s: %v", reason, refreshErr)
@@ -161,6 +164,7 @@ func WorkerGroup(
 				configDelivered, sessErr := RunSession(ctx, tp, peer, d, localPort,
 					getConf, cc, wid, &credsSnapshot, deviceID, password, stats)
 
+				quotaRetry := false
 				if getConf {
 					if configDelivered {
 						atomic.StoreInt32(&configSent, 1)
@@ -178,14 +182,14 @@ func WorkerGroup(
 
 					turnAllocAttrMissing := strings.Contains(errStrLower, "turn allocate") &&
 						strings.Contains(errStrLower, "attribute not found")
-					turnCredRefreshNeeded := turnAllocAttrMissing ||
+					isTurnQuota := strings.Contains(errStrLower, "quota") || strings.Contains(errStr, "486")
+					quotaRetry = isTurnQuota
+					turnCredRefreshNeeded := !isTurnQuota && (turnAllocAttrMissing ||
 						strings.Contains(errStrLower, "turn allocate auth") ||
 						strings.Contains(errStrLower, "invalid credential") ||
 						strings.Contains(errStrLower, "stale nonce") ||
 						strings.Contains(errStrLower, "allocation mismatch") ||
-						strings.Contains(errStrLower, "error 508") ||
-						strings.Contains(errStrLower, "turn квота") ||
-						strings.Contains(errStrLower, "quota")
+						strings.Contains(errStrLower, "error 508"))
 
 					if strings.Contains(errStrLower, "rate limit") ||
 						strings.Contains(errStrLower, "flood control") ||
@@ -201,7 +205,9 @@ func WorkerGroup(
 					}
 
 					attempt++
-					if turnAllocAttrMissing {
+					if isTurnQuota {
+						log.Printf("[ВОРКЕР #%d] [TURN] Квота relay исчерпана (один аккаунт VK = мало слотов), ждём: %s", wid, errStr)
+					} else if turnAllocAttrMissing {
 						log.Printf("[ВОРКЕР #%d] [TURN] Allocate вернул неполный ответ, обновляем TURN-креды и повторяем (попытка %d): %s", wid, attempt, errStr)
 						refreshCreds("TURN Allocate attribute-not-found")
 					} else if turnCredRefreshNeeded {
@@ -226,6 +232,9 @@ func WorkerGroup(
 				}
 
 				retryDelay := time.Duration(5+rand.Intn(11)) * time.Second
+				if quotaRetry {
+					retryDelay = time.Duration(30+rand.Intn(31)) * time.Second
+				}
 				select {
 				case <-time.After(retryDelay):
 				case <-ctx.Done():

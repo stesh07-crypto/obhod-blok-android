@@ -216,7 +216,9 @@ object TunnelManager {
                 }
 
                 val hashCount = hashList.size.coerceIn(1, 3)
-                val totalWorkers = params.workersPerHash.coerceIn(1, 128) // Максимум ограничивается UI (80), но тут ставим хард-лимит побольше на случай запаса
+                val accountMode = !params.vkAuthMode.equals("anonymous", ignoreCase = true)
+                val maxWorkers = if (accountMode) SettingsStore.VK_ACCOUNT_MAX_WORKERS else hashCount * 27
+                val totalWorkers = params.workersPerHash.coerceIn(1, maxWorkers)
                 
                 val hashMode = if (activeHashIndex == 0) "Основной" else "Запасной"
                 updateLog("config_info", "[$hashMode] Хешей=$hashCount, Потоков=$totalWorkers", 1)
@@ -250,6 +252,25 @@ object TunnelManager {
                 // Captcha mode: wv или rjs
                 cmd.add("-captcha-mode")
                 cmd.add(params.captchaMode)
+
+                cmd.add("-vk-auth")
+                cmd.add(if (params.vkAuthMode.equals("anonymous", ignoreCase = true)) "anonymous" else "account")
+
+                if (!params.vkAuthMode.equals("anonymous", ignoreCase = true)) {
+                    try {
+                        updateLog("vk_auth_start", "VK: нажмите «Продолжить» в браузере", 0, false)
+                        val credsByHash = VkAuthWebViewManager.authenticateAll(appContext, hashList)
+                        val credsFile = VkAuthWebViewManager.writeCredsFile(appContext, credsByHash)
+                        cmd.add("-vk-creds-file")
+                        cmd.add(credsFile.absolutePath)
+                        updateLog("vk_auth_ok", "VK: TURN-учётные данные получены (${credsByHash.size} хеш.)", 0, false)
+                    } catch (e: Exception) {
+                        val msg = e.message ?: e::class.java.simpleName
+                        updateLog("vk_auth_fail", "Ошибка авторизации VK: $msg", 99, true)
+                        running.value = false
+                        return@launch
+                    }
+                }
 
                 val pb = ProcessBuilder(cmd)
                 pb.directory(context.filesDir) // Устанавливаем рабочую директорию
@@ -382,6 +403,17 @@ object TunnelManager {
                             }
                             else -> {
                                 writeCaptchaResult("error:invalid CAPTCHA_SOLVE format")
+                            }
+                        }
+                        return@forEachLine
+                    }
+
+                    // 0c. VK_AUTH_REQUIRED — обновление TURN через аккаунт VK
+                    if (lineTrim.startsWith("VK_AUTH_REQUIRED|")) {
+                        val hash = lineTrim.substringAfter("VK_AUTH_REQUIRED|").trim()
+                        if (hash.isNotEmpty()) {
+                            scope.launch {
+                                handleVkAuthRequired(hash)
                             }
                         }
                         return@forEachLine
@@ -955,6 +987,50 @@ object TunnelManager {
         }
     }
 
+    private suspend fun handleVkAuthRequired(hash: String) {
+        val ctx = lastContext?.get()
+        if (ctx == null) {
+            writeTurnCredsError()
+            return
+        }
+        updateLog("vk_auth_refresh", "Обновление VK TURN для хеша ${hash.take(8)}...", 0, false)
+        try {
+            val result = VkAuthWebViewManager.authenticate(ctx, hash)
+            val creds = result.getOrElse {
+                writeTurnCredsError()
+                updateLog("vk_auth_refresh_fail", "VK auth: ${it.message}", 99, true)
+                return
+            }
+            writeTurnCreds(hash, creds)
+            updateLog("vk_auth_refresh_ok", "VK TURN обновлены", 0, false)
+        } catch (e: Exception) {
+            writeTurnCredsError()
+            updateLog("vk_auth_refresh_fail", "VK auth: ${e.message}", 99, true)
+        }
+    }
+
+    private fun writeTurnCreds(hash: String, creds: VkTurnCreds) {
+        val proc = process
+        if (proc == null || !proc.isAlive) return
+        try {
+            val line = VkAuthWebViewManager.encodeTurnCredsPayload(hash, creds)
+            proc.outputStream.write(line.toByteArray(Charsets.UTF_8))
+            proc.outputStream.flush()
+        } catch (e: Exception) {
+            updateLog("vk_auth_write_err", "Ошибка записи TURN: ${e.message}", 200, true)
+        }
+    }
+
+    private fun writeTurnCredsError() {
+        val proc = process
+        if (proc == null || !proc.isAlive) return
+        try {
+            proc.outputStream.write("TURN_CREDS|error:cancelled\n".toByteArray(Charsets.UTF_8))
+            proc.outputStream.flush()
+        } catch (_: Exception) {
+        }
+    }
+
     fun clearLogs() {
         logs.value = emptyList()
         activeWorkers.value = 0
@@ -988,5 +1064,6 @@ data class TunnelParams(
     val protocol: String = "udp",
     val captchaMode: String = "auto", // "auto", "wv" или "rjs"
     val captchaSolveMethod: String = "auto", // "manual" или "auto"
+    val vkAuthMode: String = "account", // "account" или "anonymous"
     val detailedLogs: Boolean = false
 )

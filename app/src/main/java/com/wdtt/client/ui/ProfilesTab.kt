@@ -50,6 +50,7 @@ import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.CheckCircle
+import com.wdtt.client.PeerAddress
 import com.wdtt.client.ConnectionProfile
 import com.wdtt.client.ProfilesStore
 import android.widget.Toast
@@ -1192,7 +1193,7 @@ fun ProfilesTab(
                             ) {
                                 Button(
                                     onClick = {
-                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbitVPN_bot"))
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbit_vpnbot"))
                                         context.startActivity(intent)
                                     },
                                     modifier = Modifier.weight(1f),
@@ -1204,7 +1205,7 @@ fun ProfilesTab(
                                     shape = RoundedCornerShape(12.dp),
                                     contentPadding = PaddingValues(vertical = 10.dp)
                                 ) {
-                                    Text("🤖 @darkbitVPN", maxLines = 1, style = MaterialTheme.typography.labelSmall)
+                                    Text("🤖 @darkbit_vpnbot", maxLines = 1, style = MaterialTheme.typography.labelSmall)
                                 }
                                 
                                 Button(
@@ -1825,8 +1826,10 @@ fun ProfilesTab(
     }
 
     showExportSheet?.let { profile ->
+        val exportDtlsPort = if (savedManualPortsEnabled) savedServerDtlsPort else 56000
         ExportProfileSheet(
             profile = profile,
+            serverDtlsPort = exportDtlsPort,
             onDismissRequest = { showExportSheet = null }
         )
     }
@@ -1851,7 +1854,7 @@ private fun parseQrConfig(rawText: String): ConnectionProfile? {
                 return ConnectionProfile(
                     id = java.util.UUID.randomUUID().toString(),
                     name = "WDTT $ip",
-                    peer = ip,
+                    peer = "$ip:$dtlsPort",
                     vkHashes = hash,
                     workersPerHash = 16,
                     listenPort = localPort,
@@ -1868,7 +1871,13 @@ private fun parseQrConfig(rawText: String): ConnectionProfile? {
         try {
             val uri = android.net.Uri.parse(trimmed.replace("qwdtt:config", "qwdtt://config"))
             val name = uri.getQueryParameter("name") ?: "QR Профиль"
-            val peer = uri.getQueryParameter("peer") ?: return null
+            val peerRaw = uri.getQueryParameter("peer") ?: return null
+            val dtlsPortParam = uri.getQueryParameter("dtls_port") ?: uri.getQueryParameter("server_port")
+            val peer = if (dtlsPortParam != null) {
+                PeerAddress.ensurePort(peerRaw, dtlsPortParam.toIntOrNull()?.coerceIn(1, 65535) ?: 56000)
+            } else {
+                peerRaw
+            }
             val hashes = uri.getQueryParameter("hashes") ?: ""
             val workers = uri.getQueryParameter("workers")?.toIntOrNull() ?: 18
             val port = uri.getQueryParameter("port")?.toIntOrNull() ?: 9000
@@ -2042,7 +2051,7 @@ private suspend fun fetchProfileStatus(
     try {
         val encodedPass = URLEncoder.encode(password, "UTF-8")
         val encodedDevice = URLEncoder.encode(deviceId, "UTF-8")
-        val url = URL("http://$peer:$dtlsPort/api/profile/status?password=$encodedPass&device_id=$encodedDevice")
+        val url = URL("http://${PeerAddress.httpEndpoint(peer, dtlsPort)}/api/profile/status?password=$encodedPass&device_id=$encodedDevice")
         conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "GET"
         conn.connectTimeout = 4000
@@ -2080,7 +2089,7 @@ private suspend fun sendUnbindRequest(
 ): Boolean = withContext(Dispatchers.IO) {
     var conn: HttpURLConnection? = null
     try {
-        val url = URL("http://$peer:$dtlsPort/api/profile/unbind")
+        val url = URL("http://${PeerAddress.httpEndpoint(peer, dtlsPort)}/api/profile/unbind")
         conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.connectTimeout = 4000

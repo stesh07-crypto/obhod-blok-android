@@ -134,6 +134,7 @@ class MainActivity : ComponentActivity() {
         activeActivities++
         currentActivity = this
         ManlCaptchaWebViewManager.checkAndShowPendingCaptcha(this)
+        VkAuthWebViewManager.checkAndShowPendingAuth(this)
     }
 
     override fun onStop() {
@@ -454,7 +455,7 @@ fun MainScreen(
                     ) {
                         Button(
                             onClick = {
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/darkbitVPN_bot"))
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://t.me/darkbit_vpnbot"))
                                 context.startActivity(intent)
                             },
                             modifier = Modifier.weight(1f),
@@ -465,7 +466,7 @@ fun MainScreen(
                             shape = RoundedCornerShape(12.dp),
                             contentPadding = PaddingValues(vertical = 10.dp)
                         ) {
-                            Text("🤖 @darkbitVPN", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                            Text("🤖 @darkbit_vpnbot", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                         }
                         
                         Button(

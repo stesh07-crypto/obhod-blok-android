@@ -27,7 +27,7 @@ data class ConnectionProfile(
     val password: String,
     val trafficMb: Double = 0.0,
     val groupId: String = "",
-    val useGlobalHashes: Boolean = true
+    val useGlobalHashes: Boolean = vkHashes.isBlank()
 )
 
 data class ProfileGroup(
@@ -174,7 +174,8 @@ class ProfilesStore(context: Context) {
         val pass = secureStore.decrypt(enc) ?: ""
         val traffic = prefs[trafficKey(id)] ?: 0.0
         val groupId = prefs[groupIdKey(id)] ?: ""
-        return ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic, groupId)
+        val useGlobal = prefs[useGlobalHashesKey(id)] ?: hashes.isBlank()
+        return ConnectionProfile(id, name, peer, hashes, workers, port, pass, traffic, groupId, useGlobal)
     }
 
     suspend fun incrementProfileTraffic(id: String, additionalTrafficMb: Double) = withContext(Dispatchers.IO) {
@@ -214,19 +215,23 @@ class ProfilesStore(context: Context) {
         val p = getProfileOnce(id) ?: return
         // save to settings
         val finalHashes = if (p.useGlobalHashes) {
-            val global = settings.vkHashes.first()
+            val global = settings.globalVkHashes.first()
             global.ifEmpty { p.vkHashes }
         } else {
             p.vkHashes
         }
-        settings.save(p.peer, finalHashes, "", p.workersPerHash, "udp", p.listenPort)
+        val manualPorts = settings.manualPortsEnabled.first()
+        val serverDtlsPort = if (manualPorts) settings.serverDtlsPort.first() else 56000
+        val peerWithPort = PeerAddress.ensurePort(p.peer, serverDtlsPort)
+        settings.save(peerWithPort, finalHashes, "", p.workersPerHash, "udp", p.listenPort)
         settings.saveConnectionPassword(p.password)
         settings.saveCurrentProfile(p.id, p.name)
         if (startImmediately) {
             val captchaMode = settings.captchaMode.first()
             val captchaSolve = settings.captchaSolveMethod.first()
+            val vkAuthMode = settings.vkAuthMode.first()
             val detailedLogs = settings.detailedLogs.first()
-            val params = TunnelParams(p.peer, finalHashes, "", p.workersPerHash, p.listenPort, "", p.password, "udp", captchaMode, captchaSolve, detailedLogs)
+            val params = TunnelParams(peerWithPort, finalHashes, "", p.workersPerHash, p.listenPort, "", p.password, "udp", captchaMode, captchaSolve, vkAuthMode, detailedLogs)
             TunnelManager.start(context, params)
         }
     }

@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wdtt.client.PeerAddress
 import com.wdtt.client.SettingsStore
 import com.wdtt.client.TunnelManager
 import com.wdtt.client.TunnelService
@@ -169,6 +170,8 @@ fun SettingsTabContent(
     var useWVCaptcha by rememberSaveable { mutableStateOf(false) }
     var isManualMode by rememberSaveable { mutableStateOf(true) }
     var wbvManualMode by rememberSaveable { mutableStateOf(true) }
+    var vkAccountAuth by rememberSaveable { mutableStateOf(true) }
+    var vkAuthBusy by remember { mutableStateOf(false) }
     var manualPortsEnabled by rememberSaveable { mutableStateOf(false) }
     var serverDtlsPortInput by rememberSaveable { mutableStateOf("56000") }
     var serverWgPortInput by rememberSaveable { mutableStateOf("56001") }
@@ -182,19 +185,22 @@ fun SettingsTabContent(
     }
     val filledHashCount = uniqueHashes.size
     val combinedHashes = uniqueHashes.joinToString(",")
-    val dynamicMaxWorkers = remember(filledHashCount) { (filledHashCount.coerceAtLeast(1) * 27).toFloat() }
+    val dynamicMaxWorkers = remember(filledHashCount, vkAccountAuth) {
+        if (vkAccountAuth) SettingsStore.VK_ACCOUNT_MAX_WORKERS.toFloat()
+        else (filledHashCount.coerceAtLeast(1) * 27).toFloat()
+    }
     
     val globalHashesRaw by settingsStore.globalVkHashes.collectAsStateWithLifecycle(initialValue = "")
     var portInput by rememberSaveable { mutableStateOf("9000") }
     var sniInput by rememberSaveable { mutableStateOf("") }
 
-    LaunchedEffect(dynamicMaxWorkers) {
-        if (workersInput > dynamicMaxWorkers) {
-            workersInput = dynamicMaxWorkers
-        }
-    }
 
-    val currentWorkers = workersInput.coerceIn(WORKERS_PER_GROUP.toFloat(), dynamicMaxWorkers)
+
+    val currentWorkers = if (vkAccountAuth) {
+        workersInput.coerceIn(1f, dynamicMaxWorkers)
+    } else {
+        workersInput.coerceIn(WORKERS_PER_GROUP.toFloat(), dynamicMaxWorkers)
+    }
 
     val hashErrors = remember(currentHashesRaw) {
         buildList {
@@ -231,9 +237,14 @@ fun SettingsTabContent(
         val captchaMode = settingsStore.captchaMode.first()
         val captchaMethod = settingsStore.captchaSolveMethod.first()
         val wbvCaptchaMethod = settingsStore.captchaWbvSolveMethod.first()
+        val vkAuthMode = settingsStore.vkAuthMode.first()
         
         peerInput = peer
-        workersInput = roundToGroup(workers.toFloat(), (uniqueHashes.size.coerceAtLeast(1) * 27).toFloat())
+        val initialHashesList = hashes.split(Regex("[,\\s\\n]+"))
+            .filter { it.isNotBlank() && it.length >= 16 }
+            .distinct()
+        val initialHashesCount = initialHashesList.size.coerceAtLeast(1)
+        workersInput = roundToGroup(workers.toFloat(), (initialHashesCount * 27).toFloat())
         portInput = port.toString()
         manualPortsEnabled = manualPorts
         serverDtlsPortInput = serverDtlsPort.toString()
@@ -243,6 +254,7 @@ fun SettingsTabContent(
         useWVCaptcha = captchaMode != "rjs"
         wbvManualMode = wbvCaptchaMethod != "auto"
         isManualMode = if (captchaMode == "wv") wbvManualMode else captchaMethod != "auto"
+        vkAccountAuth = !vkAuthMode.equals("anonymous", ignoreCase = true)
         
         initialized = true
     }
@@ -276,9 +288,13 @@ fun SettingsTabContent(
         saveJob?.cancel()
         scope.launch {
             val savedLocalPort = if (manualPortsEnabled) portInput.toIntOrNull()?.coerceIn(1, 65535) ?: 9000 else 9000
+            val hashesList = hashes.split(Regex("[,\\s\\n]+")).filter { it.isNotBlank() && it.length >= 16 }.distinct()
+            val hashesCount = hashesList.size.coerceAtLeast(1)
+            val maxW = hashesCount * 27
+            val finalWorkers = workersInput.toInt().coerceIn(9, maxW)
             settingsStore.save(
                 peerInput, hashes, "",
-                workersInput.toInt(), "udp", savedLocalPort, sniInput, false
+                finalWorkers, "udp", savedLocalPort, sniInput, false
             )
             onSaved?.invoke()
         }
@@ -289,9 +305,13 @@ fun SettingsTabContent(
         saveJob = scope.launch {
             delay(300)
             val savedLocalPort = if (manualPortsEnabled) portInput.toIntOrNull()?.coerceIn(1, 65535) ?: 9000 else 9000
+            val hashesList = combinedHashes.split(Regex("[,\\s\\n]+")).filter { it.isNotBlank() && it.length >= 16 }.distinct()
+            val hashesCount = hashesList.size.coerceAtLeast(1)
+            val maxW = hashesCount * 27
+            val finalWorkers = workersInput.toInt().coerceIn(9, maxW)
             settingsStore.save(
                 peerInput, combinedHashes, "",
-                workersInput.toInt(), "udp", savedLocalPort, sniInput, false
+                finalWorkers, "udp", savedLocalPort, sniInput, false
             )
         }
     }
@@ -363,26 +383,31 @@ fun SettingsTabContent(
     fun startTunnelService() {
         val effectiveCaptchaMode = if (autoCaptchaEnabled) "auto" else if (useWVCaptcha) "wv" else "rjs"
         val effectiveCaptchaSolveMethod = if (!autoCaptchaEnabled && effectiveCaptchaMode == "wv" && isManualMode) "manual" else "auto"
+        val hashesList = combinedHashes.split(Regex("[,\\s\\n]+")).filter { it.isNotBlank() && it.length >= 16 }.distinct()
+        val hashesCount = hashesList.size.coerceAtLeast(1)
+        val maxW = hashesCount * 27
+        val finalWorkers = workersInput.toInt().coerceIn(9, maxW)
         saveJob?.cancel()
         scope.launch {
             settingsStore.save(
                 peerInput, combinedHashes, "",
-                workersInput.toInt(), "udp", effectiveLocalPort, sniInput, false
+                finalWorkers, "udp", effectiveLocalPort, sniInput, false
             )
             settingsStore.saveCaptchaMode(effectiveCaptchaMode)
             settingsStore.saveCaptchaSolveMethod(effectiveCaptchaSolveMethod)
         }
         val intent = Intent(context, TunnelService::class.java).apply {
             action = "START"
-            putExtra("peer", "$peerInput:$effectiveServerDtlsPort")
+            putExtra("peer", PeerAddress.ensurePort(peerInput, effectiveServerDtlsPort))
             putExtra("vk_hashes", combinedHashes)
             putExtra("secondary_vk_hash", "")
-            putExtra("workers_per_hash", workersInput.toInt())
+            putExtra("workers_per_hash", finalWorkers)
             putExtra("port", effectiveLocalPort)
             putExtra("sni", sniInput)
             putExtra("connection_password", savedConnectionPassword)
             putExtra("captcha_mode", effectiveCaptchaMode)
             putExtra("captcha_solve_method", effectiveCaptchaSolveMethod)
+            putExtra("vk_auth_mode", if (vkAccountAuth) "account" else "anonymous")
         }
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent)
         else context.startService(intent)
@@ -430,12 +455,12 @@ fun SettingsTabContent(
     }
 
     if (showHashesDialog) {
-        val globalParts = globalHashesRaw.split(Regex("[,\\s\\n]+")).filter { it.isNotEmpty() }
+        val activeParts = currentHashesRaw.split(Regex("[,\\s\\n]+")).filter { it.isNotEmpty() }
         HashesDialog(
-            hash1 = globalParts.getOrElse(0) { "" },
-            hash2 = globalParts.getOrElse(1) { "" },
-            hash3 = globalParts.getOrElse(2) { "" },
-            hash4 = globalParts.getOrElse(3) { "" },
+            hash1 = activeParts.getOrElse(0) { "" },
+            hash2 = activeParts.getOrElse(1) { "" },
+            hash3 = activeParts.getOrElse(2) { "" },
+            hash4 = activeParts.getOrElse(3) { "" },
             onSave = { h1, h2, h3, h4 ->
                 val cleaned1 = stripVkUrlStatic(h1)
                 val cleaned2 = stripVkUrlStatic(h2)
@@ -444,16 +469,21 @@ fun SettingsTabContent(
                 val combined = normalizeHashes(cleaned1, cleaned2, cleaned3, cleaned4)
                 
                 scope.launch {
-                    settingsStore.saveGlobalVkHashes(combined)
                     val currentProfileIdStr = settingsStore.currentProfileId.first()
-                    // Apply to current tunnel if no profile is active, or if current profile uses global hashes
-                    if (currentProfileIdStr.isEmpty()) {
-                        saveTunnelSettingsNow(combined) { showHashesDialog = false }
-                    } else {
-                        // Profile is active, we don't auto-update tunnel unless we re-apply the profile
-                        // To be safe, we just close the dialog. If the user reconnects, it'll apply.
-                        showHashesDialog = false
+                    val currentProfile = profiles.firstOrNull { it.id == currentProfileIdStr }
+                    
+                    if (currentProfileIdStr.isEmpty() || (currentProfile != null && currentProfile.useGlobalHashes)) {
+                        settingsStore.saveGlobalVkHashes(combined)
                     }
+                    
+                    // Coerce workers count to new max immediately!
+                    val newHashCount = combined.split(",").filter { it.isNotBlank() && it.length >= 16 }.size.coerceAtLeast(1)
+                    val newMax = newHashCount * 27
+                    if (workersInput > newMax) {
+                        workersInput = newMax.toFloat()
+                    }
+                    
+                    saveTunnelSettingsNow(combined) { showHashesDialog = false }
                 }
             },
             onDismiss = { showHashesDialog = false }
@@ -821,7 +851,7 @@ fun SettingsTabContent(
                                 ) {
                                     Button(
                                         onClick = {
-                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbitVPN_bot"))
+                                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbit_vpnbot"))
                                             context.startActivity(intent)
                                         },
                                         modifier = Modifier.weight(1f),
@@ -833,7 +863,7 @@ fun SettingsTabContent(
                                         shape = RoundedCornerShape(12.dp),
                                         contentPadding = PaddingValues(vertical = 10.dp)
                                     ) {
-                                        Text("🤖 @darkbitVPN", maxLines = 1, style = MaterialTheme.typography.labelMedium)
+                                        Text("🤖 @darkbit_vpnbot", maxLines = 1, style = MaterialTheme.typography.labelMedium)
                                     }
                                     
                                     Button(
@@ -1078,7 +1108,7 @@ fun SettingsTabContent(
                                 onClick = {
                                     expanded = false
                                     scope.launch {
-                                        val global = settingsStore.vkHashes.first()
+                                        val global = settingsStore.globalVkHashes.first()
                                         val effectiveHashes = if (p.useGlobalHashes) global.ifEmpty { p.vkHashes } else p.vkHashes
                                         
                                         // Clean hashes to prevent mismatch with combinedHashes and avoid false '*'
@@ -1101,9 +1131,11 @@ fun SettingsTabContent(
                                             kotlinx.coroutines.delay(500)
                                             val captchaMode = settingsStore.captchaMode.first()
                                             val captchaSolve = settingsStore.captchaSolveMethod.first()
+                                            val vkAuthMode = settingsStore.vkAuthMode.first()
                                             val isDetailedLogs = settingsStore.detailedLogs.first()
+                                            val peerWithPort = PeerAddress.ensurePort(p.peer, effectiveServerDtlsPort)
                                             val params = com.wdtt.client.TunnelParams(
-                                                p.peer, cleanedHashes, "", p.workersPerHash, p.listenPort, "", p.password, "udp", captchaMode, captchaSolve, isDetailedLogs
+                                                peerWithPort, cleanedHashes, "", p.workersPerHash, p.listenPort, "", p.password, "udp", captchaMode, captchaSolve, vkAuthMode, isDetailedLogs
                                             )
                                             TunnelManager.start(context, params, isSwitching = true)
                                         }
@@ -1199,17 +1231,26 @@ fun SettingsTabContent(
                 Spacer(Modifier.height(4.dp))
 
                 val maxWorkers = dynamicMaxWorkers
-                val minWorkers = WORKERS_PER_GROUP.toFloat()
-                val currentWorkersVal = roundToGroup(currentWorkers.coerceIn(minWorkers, maxWorkers), maxWorkers)
+                val minWorkers = if (vkAccountAuth) 1f else WORKERS_PER_GROUP.toFloat()
+                val workerStep = if (vkAccountAuth) 1f else WORKERS_PER_GROUP.toFloat()
+                val currentWorkersVal = if (vkAccountAuth) {
+                    currentWorkers.coerceIn(1f, maxWorkers).roundToInt().toFloat()
+                } else {
+                    roundToGroup(currentWorkers.coerceIn(minWorkers, maxWorkers), maxWorkers)
+                }
 
                 CompactSteppedSlider(
                     value = currentWorkersVal,
                     onValueChange = { raw ->
-                        workersInput = roundToGroup(raw, maxWorkers)
+                        workersInput = if (vkAccountAuth) {
+                            raw.coerceIn(1f, maxWorkers).roundToInt().toFloat()
+                        } else {
+                            roundToGroup(raw, maxWorkers)
+                        }
                         scheduleSave()
                     },
                     valueRange = minWorkers..maxWorkers,
-                    stepSize = WORKERS_PER_GROUP.toFloat(),
+                    stepSize = workerStep,
                     enabled = !tunnelRunning,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -1220,7 +1261,83 @@ fun SettingsTabContent(
                     color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                 )
 
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Вход через аккаунт VK",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            "Необходимо авторизоваться через свой аккаунт VK",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = vkAccountAuth,
+                        enabled = !tunnelRunning && !vkAuthBusy,
+                        onCheckedChange = { enabled ->
+                            vkAccountAuth = enabled
+                            scope.launch {
+                                settingsStore.saveVkAuthMode(if (enabled) "account" else "anonymous")
+                            }
+                        }
+                    )
+                }
+
+                if (vkAccountAuth) {
+                    Text(
+                        "До ${SettingsStore.VK_ACCOUNT_MAX_WORKERS} потоков на один аккаунт VK. " +
+                            "VK ограничивает TURN relay на звонок — возможны ошибки (квота 486). " +
+                            "При сбоях уменьшите до 1–2.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                    Button(
+                        onClick = {
+                            scope.launch {
+                                vkAuthBusy = true
+                                try {
+                                    val result = com.wdtt.client.VkAuthWebViewManager.loginOnly(context)
+                                    result.onSuccess {
+                                        Toast.makeText(
+                                            context,
+                                            "Вход в VK выполнен",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }.onFailure {
+                                        Toast.makeText(
+                                            context,
+                                            "VK: ${it.message ?: "ошибка"}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                } finally {
+                                    vkAuthBusy = false
+                                }
+                            }
+                        },
+                        enabled = !tunnelRunning && !vkAuthBusy,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (vkAuthBusy) "Ожидание входа VK..." else "Войти в VK")
+                    }
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
+
                 // — Авто капча —
+                AnimatedVisibility(visible = !vkAccountAuth) {
+                Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -1345,6 +1462,8 @@ fun SettingsTabContent(
                             }
                         }
                     }
+                }
+                }
                 }
         }
 

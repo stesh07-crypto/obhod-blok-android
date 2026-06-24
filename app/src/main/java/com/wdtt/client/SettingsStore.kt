@@ -19,6 +19,9 @@ import kotlinx.coroutines.launch
 class SettingsStore(context: Context) {
     private val appContext = context.applicationContext
     companion object {
+        /** Макс. потоков при входе через аккаунт VK (лимит TURN relay на звонок). */
+        const val VK_ACCOUNT_MAX_WORKERS = 4
+
         private val Context.dataStore by preferencesDataStore("settings")
         private val PEER = stringPreferencesKey("peer")
         private val VK_HASHES = stringPreferencesKey("vk_hashes")
@@ -66,6 +69,8 @@ class SettingsStore(context: Context) {
         private val CAPTCHA_MODE = stringPreferencesKey("captcha_mode") // "auto", "wv", or "rjs"
         private val CAPTCHA_SOLVE_METHOD = stringPreferencesKey("captcha_solve_method") // "manual" or "auto"
         private val CAPTCHA_WBV_SOLVE_METHOD = stringPreferencesKey("captcha_wbv_solve_method") // "manual" or "auto"
+
+        private val VK_AUTH_MODE = stringPreferencesKey("vk_auth_mode") // "account" or "anonymous"
         
         // ═══ VPN Exclusions Mode ═══
         private val IS_WHITELIST = booleanPreferencesKey("is_whitelist")
@@ -157,6 +162,7 @@ class SettingsStore(context: Context) {
     // ═══ Captcha Solve Mode ═══
     val captchaMode: Flow<String> = dataStore.data.map { it[CAPTCHA_MODE] ?: "auto" }
     val captchaSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_SOLVE_METHOD] ?: "auto" }
+    val vkAuthMode: Flow<String> = dataStore.data.map { it[VK_AUTH_MODE] ?: "account" }
     val captchaWbvSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_WBV_SOLVE_METHOD] ?: "auto" }
 
     // ═══ VPN Exclusions Mode ═══
@@ -391,6 +397,13 @@ class SettingsStore(context: Context) {
     suspend fun saveCaptchaSolveMethod(method: String) {
         dataStore.edit { prefs ->
             prefs[CAPTCHA_SOLVE_METHOD] = method
+        }
+    }
+
+    suspend fun saveVkAuthMode(mode: String) {
+        val normalized = if (mode.equals("anonymous", ignoreCase = true)) "anonymous" else "account"
+        dataStore.edit { prefs ->
+            prefs[VK_AUTH_MODE] = normalized
         }
     }
 

@@ -39,7 +39,7 @@ var (
 )
 
 func init() {
-	vkAuthModeValue.Store("account")
+	vkAuthModeValue.Store("anonymous")
 	injectedCredsByLink = make(map[string]injectedTurnCreds)
 }
 
@@ -58,7 +58,7 @@ func setVkAuthMode(mode string) string {
 func getVkAuthMode() string {
 	mode, _ := vkAuthModeValue.Load().(string)
 	if mode == "" {
-		return "account"
+		return "anonymous"
 	}
 	return mode
 }

@@ -22,18 +22,21 @@ import android.webkit.WebViewClient
 import android.net.http.SslError
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -46,7 +49,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.app.NotificationCompat
@@ -240,6 +242,7 @@ object VkAuthWebViewManager {
             cm.getCookie("https://vk.com"),
             cm.getCookie("https://vk.ru"),
             cm.getCookie("https://m.vk.com"),
+            cm.getCookie("https://m.vk.ru"),
         ).filterNotNull().joinToString(";")
         return raw.split(";")
             .map { it.trim() }
@@ -306,6 +309,21 @@ object VkAuthWebViewManager {
 class VkAuthActivity : ComponentActivity() {
     private lateinit var screenMode: VkAuthScreenMode
     private var loginHandled = false
+    private var joinHash = ""
+    private var joinUrlIndex = 0
+    private var awaitingLoginBeforeJoin = false
+    private var join404Retries = 0
+    private var webViewRef: WebView? = null
+
+    private fun joinUrlCandidates(): List<String> = listOf(
+        "https://m.vk.com/call/join/$joinHash",
+        "https://vk.com/call/join/$joinHash",
+        "https://vk.ru/call/join/$joinHash",
+    )
+
+    private fun currentJoinUrl(): String = joinUrlCandidates().getOrElse(joinUrlIndex) {
+        joinUrlCandidates().last()
+    }
 
     private val interceptorJSCode = """
         (function() {
@@ -357,26 +375,34 @@ class VkAuthActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         VkAuthWebViewManager.activeActivity = this
 
         screenMode = when (intent.getStringExtra(VkAuthWebViewManager.EXTRA_MODE)) {
             VkAuthScreenMode.LOGIN.name -> VkAuthScreenMode.LOGIN
             else -> VkAuthScreenMode.JOIN_CALL
         }
-        val joinHash = intent.getStringExtra(VkAuthWebViewManager.EXTRA_JOIN_HASH).orEmpty()
+        val joinHashExtra = intent.getStringExtra(VkAuthWebViewManager.EXTRA_JOIN_HASH).orEmpty()
+        joinHash = joinHashExtra
         if (screenMode == VkAuthScreenMode.JOIN_CALL && joinHash.length < 8) {
             VkAuthWebViewManager.notifyTurnResult(Result.failure(IllegalArgumentException("Некорректный VK-хеш")))
             finish()
             return
         }
 
+        awaitingLoginBeforeJoin =
+            screenMode == VkAuthScreenMode.JOIN_CALL && !VkAuthWebViewManager.hasVkSessionCookie()
+
         val startUrl = when (screenMode) {
-            VkAuthScreenMode.LOGIN -> "https://vk.com/"
-            VkAuthScreenMode.JOIN_CALL -> "https://vk.com/call/join/$joinHash"
+            VkAuthScreenMode.LOGIN -> "https://m.vk.com/"
+            VkAuthScreenMode.JOIN_CALL -> if (awaitingLoginBeforeJoin) "https://m.vk.com/" else currentJoinUrl()
         }
         val statusText = when (screenMode) {
             VkAuthScreenMode.LOGIN -> "Войдите в аккаунт VK"
-            VkAuthScreenMode.JOIN_CALL -> "Нажмите «Продолжить» в браузере"
+            VkAuthScreenMode.JOIN_CALL -> when {
+                awaitingLoginBeforeJoin -> "Сначала войдите в аккаунт VK"
+                else -> "Нажмите «Продолжить» в браузере"
+            }
         }
 
         CookieManager.getInstance().setAcceptCookie(true)
@@ -386,22 +412,43 @@ class VkAuthActivity : ComponentActivity() {
                 var isLoading by rememberSaveable { mutableStateOf(true) }
 
                 Box(modifier = Modifier.fillMaxSize()) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             color = MaterialTheme.colorScheme.surfaceVariant
                         ) {
-                            Text(
-                                text = statusText,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = statusText,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .padding(start = 16.dp, top = 10.dp, bottom = 10.dp, end = 8.dp),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                IconButton(
+                                    onClick = {
+                                        VkAuthWebViewManager.notifyCancelled()
+                                        finish()
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = "Закрыть",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
                         }
                         Box(modifier = Modifier.weight(1f)) {
                             AndroidView(
                                 modifier = Modifier.fillMaxSize(),
                                 factory = { ctx ->
                                     WebView(ctx).apply {
+                                        webViewRef = this
+                                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                                         setBackgroundColor(android.graphics.Color.WHITE)
                                         layoutParams = ViewGroup.LayoutParams(
                                             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -455,9 +502,13 @@ class VkAuthActivity : ComponentActivity() {
                                                 super.onPageFinished(view, url)
                                                 if (screenMode == VkAuthScreenMode.JOIN_CALL) {
                                                     view?.evaluateJavascript(interceptorJSCode, null)
+                                                    checkJoinPageOrRetry(view, url)
                                                 }
                                                 if (screenMode == VkAuthScreenMode.LOGIN) {
                                                     checkLoginAndClose(url)
+                                                }
+                                                if (awaitingLoginBeforeJoin) {
+                                                    checkLoginThenOpenJoin(view, url)
                                                 }
                                             }
 
@@ -498,19 +549,49 @@ class VkAuthActivity : ComponentActivity() {
                             }
                         }
                     }
-
-                    FloatingActionButton(
-                        onClick = {
-                            VkAuthWebViewManager.notifyCancelled()
-                            finish()
-                        },
-                        modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    ) {
-                        Icon(Icons.Default.Close, contentDescription = "Закрыть", tint = Color.Black)
-                    }
                 }
             }
+        }
+    }
+
+    private fun checkLoginThenOpenJoin(view: WebView?, pageUrl: String?) {
+        if (!awaitingLoginBeforeJoin || screenMode != VkAuthScreenMode.JOIN_CALL) return
+        val sid = VkAuthWebViewManager.vkRemixSid()
+        if (sid.length < 8) return
+
+        val url = pageUrl.orEmpty().lowercase()
+        val onLoginFlow = url.contains("id.vk.com") && (url.contains("authorize") || url.contains("login"))
+        if (onLoginFlow) return
+
+        awaitingLoginBeforeJoin = false
+        joinUrlIndex = 0
+        join404Retries = 0
+        Log.d("VkAuthWV", "VK login before join OK, opening call link")
+        view?.loadUrl(currentJoinUrl())
+    }
+
+    private fun checkJoinPageOrRetry(view: WebView?, pageUrl: String?) {
+        if (screenMode != VkAuthScreenMode.JOIN_CALL || awaitingLoginBeforeJoin) return
+        view?.evaluateJavascript(
+            "(function(){var t=document.body?document.body.innerText:'';return t.indexOf('Такой страницы нет')!==-1||t.indexOf('Страница не найдена')!==-1?'404':'';})();"
+        ) { result ->
+            if (result?.contains("404") != true) return@evaluateJavascript
+            val candidates = joinUrlCandidates()
+            if (joinUrlIndex < candidates.lastIndex) {
+                joinUrlIndex++
+                join404Retries++
+                Log.w("VkAuthWV", "VK 404 on ${pageUrl ?: "?"}, retry ${joinUrlIndex + 1}/${candidates.size}")
+                runOnUiThread { view.loadUrl(currentJoinUrl()) }
+                return@evaluateJavascript
+            }
+            if (join404Retries == 0) return@evaluateJavascript
+            Log.e("VkAuthWV", "VK call link not found for hash ${joinHash.take(8)}...")
+            VkAuthWebViewManager.notifyTurnResult(
+                Result.failure(
+                    Exception("Ссылка на звонок VK недействительна или устарела. Обновите хеш звонка.")
+                )
+            )
+            finish()
         }
     }
 

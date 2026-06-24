@@ -65,6 +65,11 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.wdtt.client.VkAuthWebViewManager
 import kotlin.math.roundToInt
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -170,8 +175,9 @@ fun SettingsTabContent(
     var useWVCaptcha by rememberSaveable { mutableStateOf(false) }
     var isManualMode by rememberSaveable { mutableStateOf(true) }
     var wbvManualMode by rememberSaveable { mutableStateOf(true) }
-    var vkAccountAuth by rememberSaveable { mutableStateOf(true) }
+    var vkAccountAuth by rememberSaveable { mutableStateOf(false) }
     var vkAuthBusy by remember { mutableStateOf(false) }
+    var vkLoggedIn by remember { mutableStateOf(false) }
     var manualPortsEnabled by rememberSaveable { mutableStateOf(false) }
     var serverDtlsPortInput by rememberSaveable { mutableStateOf("56000") }
     var serverWgPortInput by rememberSaveable { mutableStateOf("56001") }
@@ -257,6 +263,24 @@ fun SettingsTabContent(
         vkAccountAuth = !vkAuthMode.equals("anonymous", ignoreCase = true)
         
         initialized = true
+        vkLoggedIn = VkAuthWebViewManager.hasVkSessionCookie()
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                vkLoggedIn = VkAuthWebViewManager.hasVkSessionCookie()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(vkAuthBusy) {
+        if (!vkAuthBusy) {
+            vkLoggedIn = VkAuthWebViewManager.hasVkSessionCookie()
+        }
     }
 
     LaunchedEffect(savedManualPortsEnabled) {
@@ -1273,7 +1297,7 @@ fun SettingsTabContent(
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            "Необходимо авторизоваться через свой аккаунт VK",
+                            "Если анонимный режим не работает — включите и войдите в свой аккаунт VK. Подключение стабильнее.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1291,27 +1315,21 @@ fun SettingsTabContent(
                 }
 
                 if (vkAccountAuth) {
-                    Text(
-                        "До ${SettingsStore.VK_ACCOUNT_MAX_WORKERS} потоков на один аккаунт VK. " +
-                            "VK ограничивает TURN relay на звонок — возможны ошибки (квота 486). " +
-                            "При сбоях уменьшите до 1–2.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.padding(bottom = 8.dp)
-                    )
                     Button(
                         onClick = {
                             scope.launch {
                                 vkAuthBusy = true
                                 try {
-                                    val result = com.wdtt.client.VkAuthWebViewManager.loginOnly(context)
+                                    val result = VkAuthWebViewManager.loginOnly(context)
                                     result.onSuccess {
+                                        vkLoggedIn = true
                                         Toast.makeText(
                                             context,
                                             "Вход в VK выполнен",
                                             Toast.LENGTH_SHORT
                                         ).show()
                                     }.onFailure {
+                                        vkLoggedIn = VkAuthWebViewManager.hasVkSessionCookie()
                                         Toast.makeText(
                                             context,
                                             "VK: ${it.message ?: "ошибка"}",
@@ -1327,6 +1345,28 @@ fun SettingsTabContent(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(if (vkAuthBusy) "Ожидание входа VK..." else "Войти в VK")
+                    }
+                    if (vkLoggedIn) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp, bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = Color(0xFF43A047),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                "Вход в VK выполнен",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFF43A047),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
                     }
                 }
 

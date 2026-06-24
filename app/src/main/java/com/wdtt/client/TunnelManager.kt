@@ -1064,6 +1064,6 @@ data class TunnelParams(
     val protocol: String = "udp",
     val captchaMode: String = "auto", // "auto", "wv" или "rjs"
     val captchaSolveMethod: String = "auto", // "manual" или "auto"
-    val vkAuthMode: String = "account", // "account" или "anonymous"
+    val vkAuthMode: String = "anonymous", // "account" или "anonymous"
     val detailedLogs: Boolean = false
 )

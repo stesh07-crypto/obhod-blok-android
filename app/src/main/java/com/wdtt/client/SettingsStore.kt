@@ -162,7 +162,7 @@ class SettingsStore(context: Context) {
     // ═══ Captcha Solve Mode ═══
     val captchaMode: Flow<String> = dataStore.data.map { it[CAPTCHA_MODE] ?: "auto" }
     val captchaSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_SOLVE_METHOD] ?: "auto" }
-    val vkAuthMode: Flow<String> = dataStore.data.map { it[VK_AUTH_MODE] ?: "account" }
+    val vkAuthMode: Flow<String> = dataStore.data.map { it[VK_AUTH_MODE] ?: "anonymous" }
     val captchaWbvSolveMethod: Flow<String> = dataStore.data.map { it[CAPTCHA_WBV_SOLVE_METHOD] ?: "auto" }
 
     // ═══ VPN Exclusions Mode ═══
@@ -491,8 +491,14 @@ fun stripVkUrlStatic(input: String): String {
         "http://vk.com/call/join/",
         "https://m.vk.com/call/join/",
         "http://m.vk.com/call/join/",
+        "https://vk.ru/call/join/",
+        "http://vk.ru/call/join/",
+        "https://m.vk.ru/call/join/",
+        "http://m.vk.ru/call/join/",
         "m.vk.com/call/join/",
-        "vk.com/call/join/"
+        "vk.com/call/join/",
+        "m.vk.ru/call/join/",
+        "vk.ru/call/join/"
     )
     for (prefix in prefixes) {
         if (lower.startsWith(prefix)) {

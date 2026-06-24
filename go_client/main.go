@@ -122,7 +122,7 @@ func main() {
 	deviceID := flag.String("device-id", "unknown", "уникальный ID устройства")
 	connPassword := flag.String("password", "", "пароль подключения")
 	captchaMode := flag.String("captcha-mode", "auto", "режим обхода капчи (auto/wv/rjs)")
-	vkAuthMode := flag.String("vk-auth", "account", "режим VK авторизации (account/anonymous)")
+	vkAuthMode := flag.String("vk-auth", "anonymous", "режим VK авторизации (account/anonymous)")
 	vkCredsFile := flag.String("vk-creds-file", "", "файл с TURN кредами от аккаунта VK")
 
 	flag.Parse()

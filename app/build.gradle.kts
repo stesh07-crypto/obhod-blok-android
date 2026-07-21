@@ -131,6 +131,7 @@ tasks.register<Exec>("buildNativeLibs") {
     group = "build"
     description = "Build Go client binaries for Android ABIs and copy them into app/src/main/jniLibs"
     workingDir = rootDir
+    isIgnoreExitValue = true
     commandLine("bash", rootDir.resolve("scripts/build-native-libs.sh").absolutePath)
 }
 

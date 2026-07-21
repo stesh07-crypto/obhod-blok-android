@@ -23,9 +23,7 @@ class VpnPermissionActivity : Activity() {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CODE_VPN) {
-            if (resultCode == RESULT_OK) {
-                TunnelManager.start(this)
-            }
+            // VPN permission granted - tunnel service will be started by TunnelService
             finish()
         }
     }

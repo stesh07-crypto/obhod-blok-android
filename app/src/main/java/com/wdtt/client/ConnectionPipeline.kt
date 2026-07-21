@@ -19,7 +19,10 @@ data class ConnectionPipelineState(
     val visible: Boolean = false,
     val current: ConnectionStep? = null,
     val completed: Set<ConnectionStep> = emptySet(),
-    val failed: ConnectionStep? = null
+    val failed: ConnectionStep? = null,
+    val timedOut: Boolean = false,
+    val timeoutSec: Int = 0,
+    val captchaRequired: Boolean = false
 ) {
     fun stepsToShow(): List<ConnectionStep> {
         return ConnectionStep.values().filter { it != ConnectionStep.DONE }
@@ -32,5 +35,5 @@ fun ConnectionPipelineCard(
     isDark: Boolean = true,
     modifier: Modifier = Modifier
 ) {
-    // Pipeline status display card
+    // Status card
 }

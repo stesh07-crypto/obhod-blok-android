@@ -17,6 +17,23 @@ const (
 	defaultCycleSecs = 36000
 )
 
+func workerErrorHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "rate limit") || strings.Contains(s, "flood control") || strings.Contains(s, "error 29") {
+		return "ошибка со стороны ВК (лимит частоты запросов)"
+	}
+	if strings.Contains(s, "quota") || strings.Contains(s, "486") {
+		return "квота TURN relay исчерпана"
+	}
+	if strings.Contains(s, "invalid credential") || strings.Contains(s, "stale nonce") {
+		return "требуется обновление TURN-кредов"
+	}
+	return ""
+}
+
 // WorkerGroup:
 // Запускает 9 потоков с одними кредами. Ротации нет — работает до смерти воркеров.
 func WorkerGroup(

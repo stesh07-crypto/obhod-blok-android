@@ -16,11 +16,9 @@ app/release/
 go.sum
 
 # ===== Native Libraries (compiled) =====
-*.so
-*.dll
-*.dylib
-jniLibs/
-app/src/main/jniLibs/
+# *.so
+# jniLibs/
+# app/src/main/jniLibs/
 
 # ===== Server binary =====
 app/src/main/assets/server

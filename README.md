@@ -1,4 +1,5 @@
-qWDTT
+OBhoD_BLOK
+
 Android-клиент для VPN-туннеля WireGuard, который ходит до вашего VPS через TURN relay VK — снаружи это выглядит как зашифрованный медиапоток звонка WebRTC, а не как классический VPN.
 
 Пакет: net.qwdtt.client · Версия: 1.3.4

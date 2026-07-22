@@ -410,12 +410,39 @@ fun ProfilesTab(
         }
     }
 
-    // Автообработка URI если приложение открыли через файл
+    // Автообработка URI если приложение открыли через файл или deep link (qwdtt:// или файл)
     LaunchedEffect(importFileUri) {
         val uri = importFileUri ?: return@LaunchedEffect
         try {
-            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
-            val parsed = parseMultipleConfigs(text)
+            val parsed: ParsedSubscription? = withContext(Dispatchers.IO) {
+                val urlParam = if (uri.scheme == "qwdtt") uri.getQueryParameter("url") else null
+                val targetUrl = urlParam ?: if (uri.scheme == "http" || uri.scheme == "https") uri.toString() else null
+
+                if (!targetUrl.isNullOrBlank()) {
+                    val remote = com.wdtt.client.SubscriptionImport.fetch(targetUrl).getOrNull()
+                    if (remote != null) {
+                        ParsedSubscription(
+                            profiles = remote.profiles,
+                            suggestedName = remote.subscriptionName,
+                            description = remote.description,
+                            trafficUsedMb = remote.trafficUsedMb,
+                            trafficLimitMb = remote.trafficLimitMb,
+                            updatedAt = remote.updatedAt
+                        )
+                    } else {
+                        // Если заголовок/подписка по URL не ответила, попробуем как одиночный профиль
+                        parseMultipleConfigs(uri.toString())
+                    }
+                } else {
+                    val text = if (uri.scheme == "qwdtt") {
+                        uri.toString()
+                    } else {
+                        context.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() ?: ""
+                    }
+                    parseMultipleConfigs(text)
+                }
+            }
+
             if (parsed != null) {
                 if (parsed.profiles.size == 1) {
                     scannedProfile = parsed.profiles.first()
@@ -423,10 +450,10 @@ fun ProfilesTab(
                     scannedMultipleProfiles = parsed
                 }
             } else {
-                Toast.makeText(context, "Неверный формат файла", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "Неверный формат файла или подписки", Toast.LENGTH_LONG).show()
             }
         } catch (e: Exception) {
-            Toast.makeText(context, "Ошибка чтения файла: ${e.message}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Ошибка импорта: ${e.message}", Toast.LENGTH_SHORT).show()
         }
         onImportHandled()
     }
@@ -1325,7 +1352,7 @@ fun ProfilesTab(
                             }
                             
                             Text(
-                                "Вы можете получить готовые профили напрямую в этих Telegram-ботах:",
+                                "Получите готовые профили напрямую в нашем Telegram-боте:",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -1337,7 +1364,7 @@ fun ProfilesTab(
                             ) {
                                 Button(
                                     onClick = {
-                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/darkbit_vpnbot"))
+                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/obhod_int_bot"))
                                         context.startActivity(intent)
                                     },
                                     modifier = Modifier.fillMaxWidth(),
@@ -1350,29 +1377,7 @@ fun ProfilesTab(
                                     contentPadding = PaddingValues(vertical = 10.dp)
                                 ) {
                                     Text(
-                                        "🤖 @darkbit_vpnbot",
-                                        maxLines = 1,
-                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                        style = MaterialTheme.typography.labelSmall
-                                    )
-                                }
-
-                                Button(
-                                    onClick = {
-                                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://t.me/sidylinkbot"))
-                                        context.startActivity(intent)
-                                    },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        contentColor = MaterialTheme.colorScheme.primary
-                                    ),
-                                    elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp),
-                                    shape = RoundedCornerShape(12.dp),
-                                    contentPadding = PaddingValues(vertical = 10.dp)
-                                ) {
-                                    Text(
-                                        "🤖 @sidylinkbot",
+                                        "🤖 @obhod_int_bot",
                                         maxLines = 1,
                                         overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                                         style = MaterialTheme.typography.labelSmall

@@ -22,7 +22,7 @@ const val DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 12
 const val UPDATE_DIALOG_ACTION_POSTPONED = "postponed"
 const val UPDATE_DIALOG_ACTION_UPDATE = "update"
 
-private const val UPDATE_LOG_TAG = "OBhoD_BLOK"
+private const val UPDATE_LOG_TAG = "OBhoD"
 private const val GITHUB_RELEASES_URL = "https://api.github.com/repos/stesh07-crypto/obhod-blok-android/releases?per_page=30"
 private const val GITHUB_LATEST_RELEASE_URL = "https://api.github.com/repos/stesh07-crypto/obhod-blok-android/releases/latest"
 private const val GITHUB_LATEST_RELEASE_WEB_URL = "https://github.com/stesh07-crypto/obhod-blok-android/releases/latest"

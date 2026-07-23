@@ -305,4 +305,26 @@ type Credentials struct {
 	CacheStreamID int
 }
 
+func workerErrorHint(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "quota"):
+		return "превышена квота трафика"
+	case strings.Contains(msg, "flood control"):
+		return "ограничение частых запросов (Flood Control)"
+	case strings.Contains(msg, "ip mismatch"):
+		return "несоответствие IP адреса"
+	case strings.Contains(msg, "timeout"):
+		return "таймаут подключения к серверу"
+	case strings.Contains(msg, "refused"):
+		return "отказ в соединении"
+	default:
+		return ""
+	}
+}
+
+
 

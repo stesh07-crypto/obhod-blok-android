@@ -1003,7 +1003,7 @@ fun ProfilesTab(
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Text(
-                        "OBhoD автоматически считывает и импортирует настройки из ссылок, файлов и QR-кодов.",
+                        "ObhoD автоматически считывает и импортирует настройки из ссылок, файлов и QR-кодов.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

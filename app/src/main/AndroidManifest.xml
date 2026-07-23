@@ -16,7 +16,7 @@
         android:name=".WdttApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="OBhoD"
+        android:label="ObhoD"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
@@ -116,7 +116,7 @@
 
         <receiver
             android:name=".TunnelWidgetProvider"
-            android:label="OBhoD Туннель"
+            android:label="ObhoD Туннель"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -129,7 +129,7 @@
 
         <service
             android:name=".QuickToggleTileService"
-            android:label="OBhoD"
+            android:label="ObhoD"
             android:icon="@drawable/ic_tile_custom"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE"
             android:exported="true">

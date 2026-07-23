@@ -16,7 +16,7 @@
         android:name=".WdttApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
-        android:label="ObhoD"
+        android:label="ObhoD_BLOK"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
@@ -27,6 +27,7 @@
             android:configChanges="orientation|screenSize"
             android:screenOrientation="portrait"
             android:launchMode="singleTask"
+            android:label="OBhoD"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

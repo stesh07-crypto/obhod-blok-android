@@ -48,7 +48,7 @@ fun LogsTab() {
     val isRunning by TunnelManager.running.collectAsStateWithLifecycle()
     val isConnecting by TunnelManager.isConnecting.collectAsStateWithLifecycle()
     val connectedSinceMs by TunnelManager.connectedSinceMs.collectAsStateWithLifecycle()
-    val pipelineState by TunnelManager.connectionPipeline.collectAsStateWithLifecycle()
+    val pipelineState = TunnelManager.connectionPipeline.collectAsStateWithLifecycle().value
     val listState = rememberLazyListState()
 
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }

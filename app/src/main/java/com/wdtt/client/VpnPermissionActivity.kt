@@ -24,7 +24,7 @@ class VpnPermissionActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_CODE_VPN) {
             if (resultCode == RESULT_OK) {
-                TunnelManager.start(this)
+                TunnelControl.startFromSavedSettings(this)
             }
             finish()
         }

@@ -475,7 +475,7 @@ class TunnelService : Service() {
                         }
                     }
                     if (!isTunnelPaused && !TunnelManager.isReconnecting.value) {
-                        updateNotification(buildTunnelNotificationText())
+                        updateNotificationWithSpeed()
                     }
                     delay(2000)
                 }
@@ -485,20 +485,44 @@ class TunnelService : Service() {
         }
     }
 
-    private fun buildTunnelNotificationText(): String {
-        val statsText = TunnelManager.stats.value.trim()
-        return when {
-            statsText.isEmpty() -> "Туннель активен"
-            statsText == "Ожидание данных..." -> "Туннель активен"
-            else -> statsText
+    private var lastRxBytes = 0L
+    private var lastTxBytes = 0L
+    private var lastStatsTime = 0L
+
+    private fun updateNotificationWithSpeed() {
+        val now = System.currentTimeMillis()
+        val uid = android.os.Process.myUid()
+        val currentRx = android.net.TrafficStats.getUidRxBytes(uid)
+        val currentTx = android.net.TrafficStats.getUidTxBytes(uid)
+        
+        var rxSpeed = 0.0
+        var txSpeed = 0.0
+        
+        if (lastStatsTime > 0L && now > lastStatsTime) {
+            val dt = (now - lastStatsTime) / 1000.0
+            if (dt > 0) {
+                val dRx = (currentRx - lastRxBytes).coerceAtLeast(0L)
+                val dTx = (currentTx - lastTxBytes).coerceAtLeast(0L)
+                rxSpeed = (dRx / (1024.0 * 1024.0)) / dt
+                txSpeed = (dTx / (1024.0 * 1024.0)) / dt
+            }
         }
+        lastRxBytes = currentRx
+        lastTxBytes = currentTx
+        lastStatsTime = now
+        
+        val activeWorkers = TunnelManager.activeWorkers.value
+        val statsText = TunnelManager.stats.value
+        val matchTraffic = Regex("Трафик:\\s*([\\d.,]+)").find(statsText)
+        val trafficMbStr = matchTraffic?.groupValues?.getOrNull(1) ?: "0.0"
+        
+        val line1 = "Потоков: $activeWorkers | Скачано: $trafficMbStr МБ"
+        val line2 = "↓ %.1f МБ/с   ↑ %.1f МБ/с".format(rxSpeed, txSpeed)
+        
+        updateNotification(line1, line2)
     }
 
-    private fun createNotificationChannel() {
-        NotificationHelper.ensureTunnelChannel(this)
-    }
-
-    private fun createNotification(text: String, actionName: String = "STOP", actionTitle: String = "Отключить"): Notification {
+    private fun createNotification(line1: String, line2: String = "", actionName: String = "STOP", actionTitle: String = "Отключить"): Notification {
         val openIntent = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java),
@@ -511,18 +535,20 @@ class TunnelService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        val fullText = if (line2.isNotEmpty()) "$line1\n$line2" else line1
+
         return NotificationCompat.Builder(this, TUNNEL_NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("qWDTT")
-            .setContentText(text)
+            .setContentTitle("ObhoD_BLOK")
+            .setContentText(line1)
+            .setSubText(if (line2.isNotEmpty()) line2 else null)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(fullText))
             .setSmallIcon(R.drawable.ic_stat_connected)
             .setOngoing(true)
             .setLocalOnly(true)
             .setContentIntent(openIntent)
             .addAction(R.drawable.ic_stop, actionTitle, stopIntent)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_DEFAULT)
-            // ВАЖНО: Делаем уведомление публичным (видимым на локскрине)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            // Категория SERVICE помогает системе понять важность
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOnlyAlertOnce(true)
             .setSilent(true)
@@ -541,13 +567,13 @@ class TunnelService : Service() {
         }
     }
 
-    private fun updateNotification(text: String) {
-        if (lastNotificationText == text) return
-        lastNotificationText = text
-        val notification = createNotification(text)
-        // Обновляем через startForeground — так надёжнее на Android 13+ и китайских прошивках.
+    private fun updateNotification(line1: String, line2: String = "") {
+        val fullKey = "$line1|$line2"
+        if (lastNotificationText == fullKey) return
+        lastNotificationText = fullKey
+        val notification = createNotification(line1, line2)
         startPersistentForeground(notification)
-        TunnelWidgetProvider.updateWidgetState(applicationContext, TunnelManager.running.value, text)
+        TunnelWidgetProvider.updateWidgetState(applicationContext, TunnelManager.running.value, line1)
         QuickToggleTileService.requestTileUpdate(applicationContext)
         AppShortcuts.refreshAsync(applicationContext)
     }

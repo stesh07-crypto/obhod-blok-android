@@ -50,8 +50,6 @@ class TunnelService : Service() {
     override fun onCreate() {
         super.onCreate()
         NotificationHelper.ensureTunnelChannel(this)
-        createNotificationChannel()
-        // Сразу берем лок при создании
         acquireWakeLock()
         setupNetworkCallback()
     }
